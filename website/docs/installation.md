@@ -133,8 +133,8 @@ cmake -S . -B build -DCMAKE_PREFIX_PATH="/your/prefix"
 ```
 
 The package config re-finds gRPC, Protobuf, nlohmann_json, and Threads for you, so a consumer only
-needs to link `temporal::sdk`. (`tests/packaging/` in this repo is exactly this consumer, used as a
-CI smoke test of the install.)
+needs to link `temporal::sdk`. (`tests/packaging/` in this repo is exactly this consumer — a
+standalone project you can build against an install tree to smoke-test packaging.)
 
 ### With Conan
 

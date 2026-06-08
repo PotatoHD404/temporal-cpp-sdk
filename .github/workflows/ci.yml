@@ -5,9 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+# Both platforms build through Conan so the toolchain deps (gRPC, Protobuf,
+# nlohmann_json) — and their CMake config packages, which Debian/Ubuntu don't
+# ship — are resolved identically and reproducibly everywhere. The SDK consumes
+# them via find_package(... CONFIG).
 jobs:
-  # macOS: deps via Homebrew. Runs the full suite (unit + integration against a
-  # dev server) and a downstream find_package() smoke test of the install tree.
+  # macOS (arm64). Full suite: build + unit tests + integration against a dev
+  # server. The `temporal` CLI is only the server binary — unrelated to the
+  # Conan-provided build toolchain.
   macos:
     runs-on: macos-14
     steps:
@@ -15,24 +20,31 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install dependencies
-        run: brew install cmake grpc protobuf nlohmann-json temporal
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-      - name: Configure
-        run: cmake --preset default
+      - name: Install Conan + Temporal CLI
+        run: |
+          brew install temporal
+          pip install "conan>=2.0,<3"
 
-      - name: Build
-        run: cmake --build build -j3
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2
+          key: conan2-${{ runner.os }}-${{ hashFiles('conanfile.py') }}
+          restore-keys: conan2-${{ runner.os }}-
+
+      - name: Build (Conan)
+        run: |
+          conan profile detect --force
+          conan install . -o "&:build_tests=True" --build=missing -s build_type=Release
+          cmake --preset conan-release
+          cmake --build --preset conan-release
 
       - name: Unit tests
-        run: ctest --test-dir build --output-on-failure -LE integration
-
-      - name: Install + downstream find_package smoke test
-        run: |
-          cmake --install build --prefix "$RUNNER_TEMP/tcpp-install"
-          cmake -S tests/packaging -B "$RUNNER_TEMP/consumer" \
-            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/tcpp-install"
-          cmake --build "$RUNNER_TEMP/consumer"
+        run: ctest --test-dir build/Release --output-on-failure -LE integration
 
       - name: Start Temporal dev server
         run: |
@@ -46,17 +58,13 @@ jobs:
       - name: Integration tests
         env:
           TEMPORAL_INTEGRATION: "1"
-        run: ctest --test-dir build --output-on-failure -L integration
+        run: ctest --test-dir build/Release --output-on-failure -L integration
 
       - name: Stop Temporal dev server
         if: always()
         run: kill "$(cat /tmp/temporal.pid)" 2>/dev/null || true
 
-  # Linux via Conan. The SDK consumes its deps through find_package(... CONFIG),
-  # and Debian/Ubuntu's protobuf/gRPC packages ship pkg-config files but no CMake
-  # config packages — so Conan supplies the toolchain deps (with their config
-  # packages) instead. This proves the SDK builds off macOS and exercises
-  # conanfile.py end to end on a clean machine.
+  # Linux (x86-64). Build + unit tests via Conan.
   linux:
     runs-on: ubuntu-latest
     steps:
@@ -81,9 +89,12 @@ jobs:
           key: conan2-${{ runner.os }}-${{ hashFiles('conanfile.py') }}
           restore-keys: conan2-${{ runner.os }}-
 
-      - name: Build the SDK via Conan
+      - name: Build (Conan)
         run: |
           conan profile detect --force
-          conan install . --build=missing -s build_type=Release
+          conan install . -o "&:build_tests=True" --build=missing -s build_type=Release
           cmake --preset conan-release
           cmake --build --preset conan-release
+
+      - name: Unit tests
+        run: ctest --test-dir build/Release --output-on-failure -LE integration

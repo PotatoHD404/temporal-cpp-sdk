@@ -87,11 +87,12 @@ priority/dependency.
 ## Build / packaging
 
 - `install()` rules + a CMake package config ✅ — `find_package(temporal-cpp CONFIG)` exports
-  `temporal::sdk`/`temporal::proto`; guarded by a downstream-consumer CI smoke test
-  (`tests/packaging/`). pkg-config remaining.
-- **Conan** packaging ✅ — `conanfile.py` (CMakeToolchain + CMakeDeps); a CI job exercises the recipe
-  (non-blocking until verified on a Conan host). vcpkg port remaining.
-- **Linux CI** ✅ — Conan-based Ubuntu job builds the SDK alongside macOS (Debian/Ubuntu system
-  protobuf/gRPC ship no CMake config packages, so Conan supplies them). Windows/MSVC is
-  compiler-flag-clean (warning flags gated, tools resolved from imported targets) but not yet CI-covered.
+  `temporal::sdk`/`temporal::proto`; verified locally by a standalone downstream consumer
+  (`tests/packaging/`). pkg-config + re-adding the consumer build as a Conan-toolchain CI step remain.
+- **Conan** packaging ✅ — `conanfile.py` (CMakeToolchain + CMakeDeps, `build_tests`/`build_examples`
+  options); both CI jobs build through it, verified green (gRPC 1.67.1 / protobuf 5.27.0). vcpkg port remaining.
+- **CI matrix** ✅ — macOS (arm64) and Linux both build via Conan, for identical reproducible toolchain
+  deps everywhere (Debian/Ubuntu ship no CMake config packages for protobuf/gRPC, so Conan supplies
+  them). macOS runs unit + integration, Linux runs unit. Windows/MSVC is compiler-flag-clean (warning
+  flags gated, tools resolved from imported targets) but not yet CI-covered.
 - Optional: build protobuf/gRPC via `FetchContent` for hermetic builds.

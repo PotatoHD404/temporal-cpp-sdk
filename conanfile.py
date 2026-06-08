@@ -31,8 +31,11 @@ class TemporalCppConan(ConanFile):
     topics = ("temporal", "workflow", "grpc", "durable-execution")
 
     settings = "os", "compiler", "build_type", "arch"
-    options = {"fPIC": [True, False]}
-    default_options = {"fPIC": True}
+    # build_tests/build_examples default off so `conan create` packages just the
+    # library; CI flips build_tests on (`-o build_tests=True`) to build + run the
+    # test driver.
+    options = {"fPIC": [True, False], "build_tests": [True, False], "build_examples": [True, False]}
+    default_options = {"fPIC": True, "build_tests": False, "build_examples": False}
 
     # For `conan create`. The third_party/api submodule must be checked out at
     # export time (it carries the .proto files the build generates code from).
@@ -68,10 +71,8 @@ class TemporalCppConan(ConanFile):
     def generate(self):
         CMakeDeps(self).generate()
         tc = CMakeToolchain(self)
-        # The SDK ships its own tests/examples drivers; a package build wants
-        # neither. Consumers building from source can flip these back on.
-        tc.variables["TEMPORAL_BUILD_TESTS"] = False
-        tc.variables["TEMPORAL_BUILD_EXAMPLES"] = False
+        tc.variables["TEMPORAL_BUILD_TESTS"] = bool(self.options.build_tests)
+        tc.variables["TEMPORAL_BUILD_EXAMPLES"] = bool(self.options.build_examples)
         tc.generate()
 
     def build(self):
