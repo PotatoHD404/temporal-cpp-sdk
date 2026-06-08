@@ -1,0 +1,131 @@
+---
+title: Capabilities & parity
+description: An honest, itemized matrix of what works vs. the official Temporal SDKs.
+---
+
+# Capabilities & parity
+
+**This SDK is not at parity with the official Temporal SDKs, and won't be for a long time.** The
+official Go/Java/Python/TS/.NET SDKs are years of work by teams; Temporal's Go engine alone is tens
+of thousands of lines, and the full surface (schedules, Nexus, versioning, the test framework,
+security, observability, the operator/cloud client…) is enormous.
+
+What this project *is*: a genuinely working, **fully-tested core** of the Temporal programming model —
+enough to write and run real workflows that orchestrate activities, react to signals/queries/updates,
+compose child workflows and selectors, and continue-as-new — on a native C++ engine with a sticky
+cache. This page is the honest accounting.
+
+**Legend:** ✅ implemented & tested · 🟡 partial · ❌ not implemented
+
+## Client
+
+| Capability | Status | Notes |
+|---|---|---|
+| Connect (insecure) | ✅ | |
+| Start workflow | ✅ | id, task queue, timeouts, retry policy |
+| Await result | ✅ | follows continue-as-new chains |
+| Signal / Query / Update | ✅ | synchronous query & update |
+| Cancel / Terminate | ✅ | |
+| Get handle to existing run | ✅ | |
+| Signal-with-start | ❌ | |
+| List / count / describe workflows | ❌ | |
+| Reset / batch operations | ❌ | |
+| Schedules client | ❌ | create/update/delete/list/trigger/pause |
+| Operator & Cloud services | ❌ | |
+
+## Worker
+
+| Capability | Status | Notes |
+|---|---|---|
+| Register workflows / activities | ✅ | plain `R(Context&, Args...)` functions |
+| Poller threads, start/stop/run | ✅ | |
+| Sticky cache (resident workflows) | ✅ | incremental-history continuations |
+| Bounded cache LRU / eviction tuning | ❌ | evicts on completion only |
+| Concurrency / rate limiting (wired) | 🟡 | options exist; not all enforced |
+| Poller autoscaling, graceful drain | ❌ | |
+| Worker versioning / Build IDs / deployments | ❌ | |
+| Session workers | ❌ | |
+
+## Workflow authoring
+
+| Capability | Status | Notes |
+|---|---|---|
+| Execute activity (typed, parallel) | ✅ | |
+| Timers (`Sleep` / `NewTimer`) | ✅ | |
+| Signals (channels, buffered/ordered) | ✅ | |
+| Queries (`SetQueryHandler`) | ✅ | live-state, read-only |
+| Updates (`SetUpdateHandler`) | ✅ | accept + complete on the live path |
+| Update validators | ❌ | no pre-acceptance rejection phase |
+| Selectors | 🟡 | future cases; no channel cases yet |
+| Child workflows | ✅ | basic; no parent-close-policy / cancel / signal-child |
+| Continue-as-new | ✅ | |
+| Observe cancellation (`IsCancelled`) | ✅ | |
+| Cancellation scopes / propagation | ❌ | not propagated to activities/timers |
+| `GetVersion` / patching | ❌ | |
+| SideEffect / MutableSideEffect | ❌ | |
+| Local activities | ❌ | |
+| External-workflow signal/cancel | ❌ | |
+| Search attributes / memo / upsert | ❌ | |
+| Header / context propagation | ❌ | |
+
+## Activities
+
+| Capability | Status | Notes |
+|---|---|---|
+| Typed execution | ✅ | |
+| Server-driven retries (`RetryPolicy`) | ✅ | |
+| Application errors (retryable / not) | ✅ | |
+| Heartbeating | ✅ | call wired; throttling/cancel-detection ❌ |
+| Async (manual) completion | ❌ | |
+| Activity-side cancellation | ❌ | |
+
+## Data & serialization
+
+| Capability | Status | Notes |
+|---|---|---|
+| JSON / nil / bytes converters | ✅ | nlohmann-json default stack |
+| Custom converters | ✅ | |
+| Proto / ProtoJSON converters | ❌ | |
+| Payload codecs (encryption/compression) | ❌ | |
+| Custom failure converter | ❌ | |
+| Large-payload / external storage | ❌ | |
+
+## Determinism & safety
+
+| Capability | Status | Notes |
+|---|---|---|
+| Stackful-coroutine dispatcher | ✅ | |
+| Sticky cache + incremental history | ✅ | |
+| Non-determinism detection | ❌ | commands not compared to history |
+| Replay re-application of updates | ❌ | matters only after a cache eviction |
+| History pagination | ❌ | long histories not paged |
+| Deadlock detection / panic policies | ❌ | |
+
+## Security, observability, ecosystem
+
+| Capability | Status | Notes |
+|---|---|---|
+| TLS / mTLS / API-key auth | ❌ | insecure only |
+| Interceptors (client + worker) | ❌ | |
+| Metrics | ❌ | |
+| Tracing / OpenTelemetry | ❌ | |
+| Structured logging | ✅ | pluggable `log::Logger` |
+| Test framework (time-skip, replayer) | ❌ | |
+| Schedules | ❌ | |
+| Nexus operations | ❌ | |
+
+## Roadmap {#roadmap}
+
+Rough priority order (see the repo's `docs/ROADMAP.md` for detail):
+
+1. **Determinism hardening** — non-determinism detection, history pagination, bounded sticky-cache
+   LRU, heartbeat throttling + cancel detection.
+2. **Workflow feature surface** — update validators, richer cancellation scopes, selector channel
+   cases, SideEffect/MutableSideEffect, `GetVersion` versioning, local activities.
+3. **Production concerns** — TLS/mTLS + API-key auth, interceptors, metrics & tracing,
+   proto/protoJSON converters + payload codecs, worker tuning.
+4. **Breadth** — schedules, Nexus, worker versioning, a replay/test framework, search attributes,
+   the broader client surface.
+
+If a capability you need is in the ❌ column, it genuinely isn't there yet — please don't assume
+otherwise from the working core.

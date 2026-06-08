@@ -1,0 +1,9 @@
+# Docusaurus / Node
+/node_modules
+/build
+/.docusaurus
+/.cache-loader
+package-lock.json
+npm-debug.log*
+yarn-error.log*
+.DS_Store

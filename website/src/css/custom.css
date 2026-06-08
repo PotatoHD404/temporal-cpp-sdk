@@ -1,0 +1,26 @@
+/**
+ * Global styles for the temporal-cpp docs site (Infima theme variables).
+ */
+
+:root {
+  --ifm-color-primary: #6b4dff;
+  --ifm-color-primary-dark: #5331ff;
+  --ifm-color-primary-darker: #4624ff;
+  --ifm-color-primary-darkest: #2c00e0;
+  --ifm-color-primary-light: #8369ff;
+  --ifm-color-primary-lighter: #9076ff;
+  --ifm-color-primary-lightest: #b3a3ff;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #a890ff;
+  --ifm-color-primary-dark: #8f70ff;
+  --ifm-color-primary-darker: #8260ff;
+  --ifm-color-primary-darkest: #5c30ff;
+  --ifm-color-primary-light: #c1b0ff;
+  --ifm-color-primary-lighter: #cec0ff;
+  --ifm-color-primary-lightest: #f0ebff;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}
