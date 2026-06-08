@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -24,6 +25,7 @@
 #include "temporal/api/update/v1/message.pb.h"
 
 #include "internal/coroutine.h"
+#include "internal/determinism.h"
 #include "internal/grpc_client.h"
 #include "internal/proto_util.h"
 
@@ -77,6 +79,8 @@ struct Prescan {
   // activity_id of their schedule, and remember how far history has been consumed.
   std::unordered_map<std::int64_t, std::string> sched_event_to_activity;
   std::int64_t last_event_id = 0;
+  // Ordered command-generating events, for non-determinism detection on replay.
+  std::vector<CommandEvent> commands;
 };
 
 // Walk the event history once, indexing the inputs/outcomes the runner replays
@@ -94,6 +98,7 @@ Prescan ScanHistory(const hist::History& history) {
         const auto& a = ev.activity_task_scheduled_event_attributes();
         ps.activities[a.activity_id()].scheduled = true;
         ps.sched_event_to_activity[ev.event_id()] = a.activity_id();
+        ps.commands.push_back({CommandEvent::Kind::Activity, a.activity_id(), a.activity_type().name()});
         break;
       }
       case enums::EVENT_TYPE_ACTIVITY_TASK_COMPLETED: {
@@ -130,16 +135,22 @@ Prescan ScanHistory(const hist::History& history) {
         }
         break;
       }
-      case enums::EVENT_TYPE_TIMER_STARTED:
-        ps.timers[ev.timer_started_event_attributes().timer_id()].started = true;
+      case enums::EVENT_TYPE_TIMER_STARTED: {
+        const auto& t = ev.timer_started_event_attributes();
+        ps.timers[t.timer_id()].started = true;
+        ps.commands.push_back({CommandEvent::Kind::Timer, t.timer_id(), ""});
         break;
+      }
       case enums::EVENT_TYPE_TIMER_FIRED:
         ps.timers[ev.timer_fired_event_attributes().timer_id()].fired = true;
         break;
-      case enums::EVENT_TYPE_START_CHILD_WORKFLOW_EXECUTION_INITIATED:
-        ps.children[ev.start_child_workflow_execution_initiated_event_attributes().workflow_id()]
-            .initiated = true;
+      case enums::EVENT_TYPE_START_CHILD_WORKFLOW_EXECUTION_INITIATED: {
+        const auto& c = ev.start_child_workflow_execution_initiated_event_attributes();
+        ps.children[c.workflow_id()].initiated = true;
+        ps.commands.push_back(
+            {CommandEvent::Kind::ChildWorkflow, c.workflow_id(), c.workflow_type().name()});
         break;
+      }
       case enums::EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED: {
         const auto& a = ev.child_workflow_execution_completed_event_attributes();
         auto& o = ps.children[a.workflow_execution().workflow_id()];
@@ -163,6 +174,19 @@ Prescan ScanHistory(const hist::History& history) {
       }
       case enums::EVENT_TYPE_WORKFLOW_EXECUTION_CANCEL_REQUESTED:
         ps.cancel_requested = true;
+        break;
+      case enums::EVENT_TYPE_MARKER_RECORDED:
+        ps.commands.push_back(
+            {CommandEvent::Kind::Marker, ev.marker_recorded_event_attributes().marker_name(), ""});
+        break;
+      case enums::EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED:
+        ps.commands.push_back({CommandEvent::Kind::CompleteWorkflow, "", ""});
+        break;
+      case enums::EVENT_TYPE_WORKFLOW_EXECUTION_FAILED:
+        ps.commands.push_back({CommandEvent::Kind::FailWorkflow, "", ""});
+        break;
+      case enums::EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW:
+        ps.commands.push_back({CommandEvent::Kind::ContinueAsNew, "", ""});
         break;
       default:
         break;
@@ -196,6 +220,7 @@ class WorkflowRunner final : public WorkflowOutbound {
   // Used for the first task and for replay after a sticky-cache miss.
   void Run() {
     commands_.clear();
+    produced_commands_.clear();
     if (!coroutine_) {
       coroutine_ = std::make_unique<Coroutine>([this] { RunBody(); });
     }
@@ -207,6 +232,7 @@ class WorkflowRunner final : public WorkflowOutbound {
   // parked — no re-replay from the start.
   void ApplyAndResume(const hist::History& history) {
     commands_.clear();
+    produced_commands_.clear();
     ApplyEvents(history);
     if (coroutine_) {
       coroutine_->Resume();
@@ -214,6 +240,14 @@ class WorkflowRunner final : public WorkflowOutbound {
   }
 
   std::int64_t last_event_id() const { return scan_.last_event_id; }
+
+  // Compare the commands this from-scratch replay produced against the command
+  // events history recorded; returns the first divergence, or nullopt if
+  // consistent. Only meaningful after a full Run() — the sticky/live path is the
+  // source of truth, not a replay, so it is never checked.
+  std::optional<std::string> CheckDeterminism() const {
+    return MatchReplayCommands(produced_commands_, scan_.commands);
+  }
 
   bool Completed() const { return status_ == Status::Completed; }
   bool Failed() const { return status_ == Status::Failed; }
@@ -245,6 +279,7 @@ class WorkflowRunner final : public WorkflowOutbound {
                                                 const Payloads& input,
                                                 const ActivityOptions& options) override {
     const std::string id = std::to_string(activity_seq_++);
+    produced_commands_.push_back({CommandEvent::Kind::Activity, id, std::string(activity_type)});
     auto state = std::make_shared<FutureState>();
     const auto it = scan_.activities.find(id);
     if (it != scan_.activities.end() && it->second.scheduled) {
@@ -266,6 +301,7 @@ class WorkflowRunner final : public WorkflowOutbound {
 
   std::shared_ptr<FutureState> StartTimer(std::chrono::nanoseconds duration) override {
     const std::string id = "t" + std::to_string(timer_seq_++);
+    produced_commands_.push_back({CommandEvent::Kind::Timer, id, ""});
     auto state = std::make_shared<FutureState>();
     const auto it = scan_.timers.find(id);
     if (it != scan_.timers.end() && it->second.started) {
@@ -282,6 +318,7 @@ class WorkflowRunner final : public WorkflowOutbound {
                                                   const ChildWorkflowOptions& options) override {
     const std::string auto_id = info_.workflow_id + "_c" + std::to_string(child_seq_++);
     const std::string id = options.id.empty() ? auto_id : options.id;
+    produced_commands_.push_back({CommandEvent::Kind::ChildWorkflow, id, std::string(workflow_type)});
     auto state = std::make_shared<FutureState>();
     const auto it = scan_.children.find(id);
     if (it != scan_.children.end() && it->second.initiated) {
@@ -356,6 +393,21 @@ class WorkflowRunner final : public WorkflowOutbound {
     } catch (const std::exception& e) {
       failure_ = MakeApplicationFailure(e.what(), "std::exception");
       status_ = Status::Failed;
+    }
+    // Record the terminal command so a replay can be matched against history's
+    // terminal event (the response path emits the actual command).
+    switch (status_) {
+      case Status::Completed:
+        produced_commands_.push_back({CommandEvent::Kind::CompleteWorkflow, "", ""});
+        break;
+      case Status::Failed:
+        produced_commands_.push_back({CommandEvent::Kind::FailWorkflow, "", ""});
+        break;
+      case Status::ContinueAsNew:
+        produced_commands_.push_back({CommandEvent::Kind::ContinueAsNew, "", ""});
+        break;
+      case Status::Blocked:
+        break;
     }
   }
 
@@ -518,6 +570,7 @@ class WorkflowRunner final : public WorkflowOutbound {
   std::unordered_map<std::string, std::shared_ptr<FutureState>> timer_futures_;     // by timer_id
   std::unordered_map<std::string, std::shared_ptr<FutureState>> child_futures_;     // by child wf id
   std::vector<cmd::Command> commands_;
+  std::vector<CommandEvent> produced_commands_;  // ordered, for non-determinism detection
   Status status_ = Status::Blocked;
   Payloads result_;
   tapi::failure::v1::Failure failure_;
@@ -581,12 +634,13 @@ std::shared_ptr<WorkflowRunner> BuildRunnerForQuery(GrpcClient* grpc,
 
 WorkflowTaskHandler::WorkflowTaskHandler(GrpcClient* grpc, std::shared_ptr<DataConverter> converter,
                                          std::shared_ptr<log::Logger> logger, std::string task_queue,
-                                         std::string sticky_queue)
+                                         std::string sticky_queue, WorkflowPanicPolicy panic_policy)
     : grpc_(grpc),
       converter_(std::move(converter)),
       logger_(std::move(logger)),
       task_queue_(std::move(task_queue)),
-      sticky_queue_(std::move(sticky_queue)) {}
+      sticky_queue_(std::move(sticky_queue)),
+      panic_policy_(panic_policy) {}
 
 void WorkflowTaskHandler::Register(std::string name, worker::WorkflowFn fn) {
   workflows_.insert_or_assign(std::move(name), std::move(fn));
@@ -670,8 +724,33 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
     runner = std::make_shared<WorkflowRunner>(info, logger_, is_replaying, std::move(scan),
                                               converter_.get(), wf->second, std::move(input));
     runner->Run();
-    // Don't cache a context built solely to answer a (full-history) query.
+    // Non-determinism detection: on a real replay the workflow must reproduce the
+    // commands history recorded, in order. Queries are read-only reconstructions
+    // (answered, not failed), so they are exempt.
     if (!is_query_task) {
+      if (const auto mismatch = runner->CheckDeterminism()) {
+        logger_->Error("nondeterministic workflow",
+                       {log::F("workflow_id", info.workflow_id), log::F("detail", *mismatch)});
+        if (panic_policy_ == WorkflowPanicPolicy::FailWorkflow) {
+          wsv::RespondWorkflowTaskCompletedRequest fail;
+          fail.set_task_token(task.task_token());
+          fail.set_identity(grpc_->identity());
+          auto* c = fail.add_commands();
+          c->set_command_type(enums::COMMAND_TYPE_FAIL_WORKFLOW_EXECUTION);
+          *c->mutable_fail_workflow_execution_command_attributes()->mutable_failure() =
+              MakeApplicationFailure(*mismatch, "NonDeterministicError");
+          grpc_->RespondWorkflowTaskCompleted(fail);
+        } else {  // BlockWorkflow (default): fail the task so the server retries it.
+          wsv::RespondWorkflowTaskFailedRequest fail;
+          fail.set_task_token(task.task_token());
+          fail.set_identity(grpc_->identity());
+          fail.set_cause(enums::WORKFLOW_TASK_FAILED_CAUSE_NON_DETERMINISTIC_ERROR);
+          *fail.mutable_failure() = MakeApplicationFailure(*mismatch, "NonDeterministicError");
+          grpc_->RespondWorkflowTaskFailed(fail);
+        }
+        return;  // never cache a poisoned runner
+      }
+      // Don't cache a context built solely to answer a (full-history) query.
       const std::lock_guard<std::mutex> lock(cache_mu_);
       cache_[run_id] = runner;
     }

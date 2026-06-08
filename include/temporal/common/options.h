@@ -59,12 +59,25 @@ struct ChildWorkflowOptions {
   std::string task_queue;  // default: the parent's task queue
 };
 
+// How a worker reacts to a non-deterministic workflow detected during replay
+// (the workflow's replayed commands diverge from recorded history).
+enum class WorkflowPanicPolicy : unsigned char {
+  // Fail the workflow *task*. The server retries it, so a corrected worker
+  // build can recover the workflow without data loss. This is the safe default
+  // and matches the Go/Java SDKs' BlockWorkflow behavior.
+  BlockWorkflow,
+  // Fail the workflow *execution* outright. Terminal; use only when a stuck
+  // workflow is worse than a failed one.
+  FailWorkflow,
+};
+
 // Options for a Worker.
 struct WorkerOptions {
   int max_concurrent_activities = 0;      // 0 => library default
   int max_concurrent_workflow_tasks = 0;  // 0 => library default
   int workflow_task_pollers = 1;
   int activity_task_pollers = 1;
+  WorkflowPanicPolicy panic_policy = WorkflowPanicPolicy::BlockWorkflow;
 };
 
 }  // namespace temporal

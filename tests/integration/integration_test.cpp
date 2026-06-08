@@ -185,6 +185,17 @@ int CountdownWorkflow(temporal::workflow::Context& ctx, int n) {
   ctx.ContinueAsNew("CountdownWorkflow", n - 1);
 }
 
+// Schedules an activity (recorded in history), then parks on a "bump" signal.
+// Used to force a from-scratch full-history replay after a worker restart and
+// verify a correct, deterministic workflow is NOT flagged as non-deterministic.
+int ReplayProbeWorkflow(temporal::workflow::Context& ctx) {
+  temporal::ActivityOptions o;
+  o.start_to_close_timeout = 10s;
+  const int base = ctx.ExecuteActivity<int>(o, "AddOne", 41).Get();  // -> 42, in history
+  const int bump = ctx.GetSignalChannel<int>("bump").Receive();      // arrives post-restart
+  return base + bump;
+}
+
 // ---- harness -------------------------------------------------------------
 std::atomic<int> g_seq{0};
 
@@ -474,6 +485,41 @@ TEST_F(IntegrationTest, SignalAndCancelRpcsSucceed) {
   EXPECT_NO_THROW(handle.Cancel());
   handle.Terminate("cleanup");
   worker.Stop();
+}
+
+// A correct, deterministic workflow must survive a from-scratch full-history
+// replay (after a sticky-cache loss) without tripping non-determinism detection.
+TEST_F(IntegrationTest, FullReplayAfterWorkerRestartStaysDeterministic) {
+  const auto tq = UniqueTaskQueue("replay");
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "ReplayProbe");
+  const auto dc = temporal::DataConverter::Default();
+
+  // Worker A runs the activity; the workflow then parks on the "bump" signal,
+  // resident in A's sticky cache. Stopping A discards that cache.
+  {
+    temporal::worker::Worker worker_a(*client_, tq);
+    worker_a.RegisterWorkflow("ReplayProbe", ReplayProbeWorkflow);
+    worker_a.RegisterActivity("AddOne", AddOneActivity);
+    worker_a.Start();
+    std::this_thread::sleep_for(6s);  // activity completes; workflow parks on the signal
+    worker_a.Stop();
+  }
+
+  // Worker B has a cold cache. Once the bump signal's task reschedules onto the
+  // normal queue (A's sticky queue times out), B replays the full history from
+  // scratch and must reproduce the recorded AddOne command. A non-determinism
+  // false-positive would fail the task and the workflow would never complete.
+  temporal::worker::Worker worker_b(*client_, tq);
+  worker_b.RegisterWorkflow("ReplayProbe", ReplayProbeWorkflow);
+  worker_b.RegisterActivity("AddOne", AddOneActivity);
+  worker_b.Start();
+
+  handle.Signal("bump", dc->ToPayloads(100));
+  EXPECT_EQ(handle.Result<int>(), 142);  // 42 + 100: the full replay completed cleanly
+  EXPECT_GE(worker_b.replays(), 1);      // prove B actually replayed from scratch
+  worker_b.Stop();
 }
 
 }  // namespace

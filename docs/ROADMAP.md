@@ -38,8 +38,10 @@ priority/dependency.
 
 - **Bounded sticky-cache LRU**: the sticky cache exists and is keyed by run id, but is currently
   unbounded (completed workflows are evicted); add a size cap + LRU eviction.
-- **Non-determinism detection**: compare emitted commands against replayed history; surface
-  mismatches per `WorkflowPanicPolicy`.
+- **Non-determinism detection** ✅: on a full-history replay the workflow's emitted commands are
+  matched in order against the command events history recorded (`src/internal/determinism.h`);
+  divergences surface per `WorkflowPanicPolicy` (BlockWorkflow default fails the task so a fixed
+  worker recovers; FailWorkflow fails the run).
 - History **pagination** (`next_page_token`) for long histories.
 - **Heartbeat throttling** + acting on the server's `cancel_requested` heartbeat response (the call
   is wired; throttling/cancel-detection are not).

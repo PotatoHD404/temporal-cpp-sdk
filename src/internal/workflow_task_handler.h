@@ -27,7 +27,8 @@ class WorkflowTaskHandler {
  public:
   WorkflowTaskHandler(GrpcClient* grpc, std::shared_ptr<DataConverter> converter,
                       std::shared_ptr<log::Logger> logger, std::string task_queue,
-                      std::string sticky_queue);
+                      std::string sticky_queue,
+                      WorkflowPanicPolicy panic_policy = WorkflowPanicPolicy::BlockWorkflow);
 
   void Register(std::string name, worker::WorkflowFn fn);
   bool has_workflows() const { return !workflows_.empty(); }
@@ -44,6 +45,7 @@ class WorkflowTaskHandler {
   std::shared_ptr<log::Logger> logger_;
   std::string task_queue_;
   std::string sticky_queue_;
+  WorkflowPanicPolicy panic_policy_;
   std::unordered_map<std::string, worker::WorkflowFn> workflows_;
 
   std::mutex cache_mu_;

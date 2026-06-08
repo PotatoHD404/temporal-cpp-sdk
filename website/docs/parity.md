@@ -96,7 +96,7 @@ cache. This page is the honest accounting.
 |---|---|---|
 | Stackful-coroutine dispatcher | ✅ | |
 | Sticky cache + incremental history | ✅ | |
-| Non-determinism detection | ❌ | commands not compared to history |
+| Non-determinism detection | ✅ | replayed commands matched to history in order; `WorkflowPanicPolicy` (block/fail) |
 | Replay re-application of updates | ❌ | matters only after a cache eviction |
 | History pagination | ❌ | long histories not paged |
 | Deadlock detection / panic policies | ❌ | |
@@ -118,8 +118,9 @@ cache. This page is the honest accounting.
 
 Rough priority order (see the repo's `docs/ROADMAP.md` for detail):
 
-1. **Determinism hardening** — non-determinism detection, history pagination, bounded sticky-cache
-   LRU, heartbeat throttling + cancel detection.
+1. **Determinism hardening** — ✅ non-determinism detection (commands matched to history on
+   replay); remaining: history pagination, bounded sticky-cache LRU, heartbeat throttling + cancel
+   detection.
 2. **Workflow feature surface** — update validators, richer cancellation scopes, selector channel
    cases, SideEffect/MutableSideEffect, `GetVersion` versioning, local activities.
 3. **Production concerns** — TLS/mTLS + API-key auth, interceptors, metrics & tracing,
