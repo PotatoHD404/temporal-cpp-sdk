@@ -140,4 +140,20 @@ wsv::TerminateWorkflowExecutionResponse GrpcClient::TerminateWorkflowExecution(
       });
 }
 
+wsv::QueryWorkflowResponse GrpcClient::QueryWorkflow(const wsv::QueryWorkflowRequest& req) {
+  return UnaryCall<wsv::QueryWorkflowResponse>(
+      "QueryWorkflow", false, [&](grpc::ClientContext* c, wsv::QueryWorkflowResponse* p) {
+        return stub_->QueryWorkflow(c, req, p);
+      });
+}
+
+wsv::RespondQueryTaskCompletedResponse GrpcClient::RespondQueryTaskCompleted(
+    const wsv::RespondQueryTaskCompletedRequest& req) {
+  return UnaryCall<wsv::RespondQueryTaskCompletedResponse>(
+      "RespondQueryTaskCompleted", false,
+      [&](grpc::ClientContext* c, wsv::RespondQueryTaskCompletedResponse* p) {
+        return stub_->RespondQueryTaskCompleted(c, req, p);
+      });
+}
+
 }  // namespace temporal::internal

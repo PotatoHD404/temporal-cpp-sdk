@@ -91,9 +91,9 @@ ctest --test-dir build -LE integration   # unit tests (no server needed)
 
 ### Integration tests
 
-End-to-end tests (timers, activity-failure propagation, parallel activities,
-retry policy, terminate/signal/cancel) run against a real server and are gated so the
-default run needs none:
+End-to-end tests (timers, activity-failure propagation, parallel activities, retry policy,
+terminate, signals, cancellation, queries, and selectors) run against a real server and are gated
+so the default run needs none:
 
 ```bash
 temporal server start-dev &                                   # dev server on :7233

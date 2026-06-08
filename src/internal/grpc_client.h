@@ -43,6 +43,9 @@ class GrpcClient {
       const wsv::RequestCancelWorkflowExecutionRequest& req);
   wsv::TerminateWorkflowExecutionResponse TerminateWorkflowExecution(
       const wsv::TerminateWorkflowExecutionRequest& req);
+  wsv::QueryWorkflowResponse QueryWorkflow(const wsv::QueryWorkflowRequest& req);
+  wsv::RespondQueryTaskCompletedResponse RespondQueryTaskCompleted(
+      const wsv::RespondQueryTaskCompletedRequest& req);
 
  private:
   std::unique_ptr<wsv::WorkflowService::Stub> stub_;

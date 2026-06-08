@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <thread>
 
 #include <gtest/gtest.h>
 
@@ -84,6 +85,43 @@ std::string CancellableWorkflow(temporal::workflow::Context& ctx) {
       return "stopped";
     }
   }
+}
+
+// Maintains a running sum of "add" signals; answers a "sum" query with the total
+// (exercising a query against live, suspended workflow state).
+int QueryableWorkflow(temporal::workflow::Context& ctx) {
+  int sum = 0;
+  ctx.SetQueryHandler("sum", [&] { return sum; });
+  auto signals = ctx.GetSignalChannel<int>("add");
+  while (true) {
+    const int v = signals.Receive();
+    if (v < 0) {
+      return sum;
+    }
+    sum += v;
+  }
+}
+
+std::string SleepActivity(temporal::activity::Context&, int ms) {
+  if (ms > 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+  }
+  return "done";
+}
+
+// Selects between an activity result and a timeout timer (the canonical pattern).
+std::string SelectorWorkflow(temporal::workflow::Context& ctx, int activity_ms, int timeout_ms) {
+  temporal::ActivityOptions o;
+  o.start_to_close_timeout = 30s;
+  auto activity = ctx.ExecuteActivity<std::string>(o, "Sleep", activity_ms);
+  auto timeout = ctx.NewTimer(std::chrono::milliseconds(timeout_ms));
+
+  std::string out;
+  temporal::workflow::Selector selector(ctx);
+  selector.AddFuture<std::string>(activity, [&](std::string r) { out = "activity:" + r; });
+  selector.AddFuture(timeout, [&]() { out = "timeout"; });
+  selector.Select();
+  return out;
 }
 
 // ---- harness -------------------------------------------------------------
@@ -222,6 +260,51 @@ TEST_F(IntegrationTest, CancellationObservedByWorkflow) {
   auto handle = client_->StartWorkflow(o, "CancellableWorkflow");
   handle.Cancel();
   EXPECT_EQ(handle.Result<std::string>(), "cancelled");
+  worker.Stop();
+}
+
+TEST_F(IntegrationTest, QueryReadsLiveWorkflowState) {
+  const auto tq = UniqueTaskQueue("query");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("QueryableWorkflow", QueryableWorkflow);
+  worker.Start();
+
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "QueryableWorkflow");
+  const auto dc = temporal::DataConverter::Default();
+  handle.Signal("add", dc->ToPayloads(5));
+  handle.Signal("add", dc->ToPayloads(7));
+  EXPECT_EQ(handle.Query<int>("sum"), 12);  // query the live, parked workflow
+  handle.Terminate("done");
+  worker.Stop();
+}
+
+TEST_F(IntegrationTest, SelectorPicksActivityWhenItWinsTheRace) {
+  const auto tq = UniqueTaskQueue("select-activity");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("SelectorWorkflow", SelectorWorkflow);
+  worker.RegisterActivity("Sleep", SleepActivity);
+  worker.Start();
+
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "SelectorWorkflow", 0, 10000);  // fast activity
+  EXPECT_EQ(handle.Result<std::string>(), "activity:done");
+  worker.Stop();
+}
+
+TEST_F(IntegrationTest, SelectorPicksTimeoutWhenActivityIsSlow) {
+  const auto tq = UniqueTaskQueue("select-timeout");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("SelectorWorkflow", SelectorWorkflow);
+  worker.RegisterActivity("Sleep", SleepActivity);
+  worker.Start();
+
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "SelectorWorkflow", 3000, 500);  // 0.5s timer wins
+  EXPECT_EQ(handle.Result<std::string>(), "timeout");
   worker.Stop();
 }
 

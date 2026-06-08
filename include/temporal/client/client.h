@@ -40,12 +40,25 @@ class WorkflowHandle {
     }
   }
 
+  // Synchronously query the workflow, encoding `args` and decoding the result.
+  template <class R, class... Args>
+  R Query(std::string_view query_type, const Args&... args) {
+    Payloads result = QueryPayloads(query_type, converter_->ToPayloads(args...));
+    if constexpr (std::is_void_v<R>) {
+      (void)result;
+      return;
+    } else {
+      return converter_->FromPayload<R>(result.at(0));
+    }
+  }
+
   void Signal(std::string_view signal_name, const Payloads& args);
   void Cancel();
   void Terminate(std::string_view reason = "");
 
  private:
   Payloads ResultPayloads();  // non-template; defined in client.cpp
+  Payloads QueryPayloads(std::string_view query_type, const Payloads& args);
 
   std::shared_ptr<internal::GrpcClient> grpc_;
   std::shared_ptr<DataConverter> converter_;

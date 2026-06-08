@@ -34,6 +34,7 @@ void Coroutine::RunBody() {
   if (!abort_) {
     try {
       body_();
+      // NOLINTNEXTLINE(bugprone-empty-catch) -- intentional: teardown unwind point.
     } catch (const CoroutineAbort&) {
       // Torn down while suspended; the stack has unwound, nothing more to do.
     } catch (...) {

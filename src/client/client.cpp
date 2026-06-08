@@ -6,6 +6,7 @@
 
 #include "temporal/api/enums/v1/event_type.pb.h"
 #include "temporal/api/history/v1/message.pb.h"
+#include "temporal/api/query/v1/message.pb.h"
 
 #include "internal/grpc_client.h"
 #include "internal/proto_util.h"
@@ -96,6 +97,21 @@ void WorkflowHandle::Terminate(std::string_view reason) {
   }
   req.set_identity(grpc_->identity());
   grpc_->TerminateWorkflowExecution(req);
+}
+
+Payloads WorkflowHandle::QueryPayloads(std::string_view query_type, const Payloads& args) {
+  internal::wsv::QueryWorkflowRequest req;
+  req.set_namespace_(ns_);
+  req.mutable_execution()->set_workflow_id(workflow_id_);
+  if (!run_id_.empty()) {
+    req.mutable_execution()->set_run_id(run_id_);
+  }
+  req.mutable_query()->set_query_type(std::string(query_type));
+  if (!args.empty()) {
+    *req.mutable_query()->mutable_query_args() = internal::ToProtoPayloads(args);
+  }
+  const auto resp = grpc_->QueryWorkflow(req);
+  return internal::FromProtoPayloads(resp.query_result());
 }
 
 Client Client::Connect(const ClientOptions& options) {

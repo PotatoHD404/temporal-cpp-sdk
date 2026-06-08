@@ -76,27 +76,30 @@ here computed natively in C++ instead of by `sdk-core`.
 | — | *(activity worker runs `ComposeGreeting`, server records `ActivityTaskCompleted`)* | | |
 | 2 | …`ActivityTaskScheduled(0)`, `ActivityTaskCompleted`→"Hello, Temporal!" | `ExecuteActivity("0")` resolved → `Get()` returns; function returns | `CompleteWorkflowExecution(result)` |
 
-## Suspension model: block-by-exception
+## Suspension model: stackful coroutine dispatcher
 
-The Go SDK parks blocked workflows as suspended goroutines kept in an in-memory cache. This slice
-instead **throws `WorkflowBlocked`** at the first unresolved `Get()` and re-executes the workflow
-from scratch on the next task. Chosen because it is the simplest *correct* model for sequential and
-parallel-await workflows: no fibers/stackful coroutines, no suspended-frame teardown hazards, and it
-maps cleanly onto non-sticky replay.
+The workflow body runs on a **stackful coroutine** (`src/internal/coroutine.h`) — a cooperative
+thread-fiber driven by a strict turn-based handshake (mutex + condition variable) so the dispatcher
+and the workflow thread never run concurrently; the state they share therefore needs no further
+locking. This is the C++ analogue of the goroutine-based dispatcher the Go SDK uses.
+
+Awaiting an unresolved future or signal **yields** the coroutine — preserving the workflow's entire
+stack and locals — rather than unwinding it. The handler resolves every history-known result up
+front, so a single resume runs the workflow to its current suspension point; its live state then
+stays available for queries to read and for selectors to choose among. Execution is still
+**non-sticky**: the workflow is re-executed from full history each task and the coroutine is torn
+down at task end (teardown throws `CoroutineAbort` into the suspended frame to unwind it cleanly).
 
 Consequences and current limits:
-- **User workflow code must not `catch (...)`** in a way that swallows `WorkflowBlocked` (it is
+- **User workflow code must not `catch (...)`** in a way that swallows `CoroutineAbort` (it is
   deliberately *not* derived from `std::exception`, so `catch (const std::exception&)` is safe).
-- **Signals and cancellation are supported** via history reconstruction (see below). **Queries,
-  updates, and selectors are not** — those need live in-memory state preserved across a suspension,
-  i.e. the coroutine dispatcher (see [ROADMAP](ROADMAP.md)). All `ExecuteActivity` calls issued
-  before the first blocking `Get()` *are* scheduled together, so fan-out/await of several activities
-  works.
-- **Re-execution is O(history) per task.** Fine for short workflows; a sticky in-process cache +
-  stackful-coroutine dispatcher (closer to Go's `coroutineState`) is the roadmap upgrade for
-  efficiency and full concurrency.
+- **Re-execution is O(history) per task**, and a fresh coroutine (thread) is created per task. Fine
+  for short workflows; a sticky in-process cache that keeps the coroutine alive across tasks is the
+  roadmap efficiency upgrade.
 - **No non-determinism detection** yet (comparing emitted commands against history). User code is
   trusted to be deterministic, as in every Temporal SDK.
+- Updates, child workflows, side effects, and versioning are not yet implemented (see
+  [ROADMAP](ROADMAP.md)).
 
 ## Signals and cancellation
 
@@ -106,15 +109,25 @@ they fit the replay model without needing preserved fiber state:
 - **Signals** — `ScanHistory` collects each `WorkflowExecutionSignaled` into a per-name ordered
   list. `ctx.GetSignalChannel<T>(name)` returns a `ReceiveChannel` whose `Receive()` consumes the
   next signal via a deterministic per-name cursor (reset every replay) and decodes it to `T`; if
-  none remain it throws `WorkflowBlocked` to park until the next event. Because replay is
-  deterministic, the Nth `Receive()` always returns the Nth signal — buffering and ordering match
-  Temporal semantics. `ReceiveAsync()` is the non-blocking variant.
+  none remain it parks (yields the coroutine) until the next event. Because replay is deterministic,
+  the Nth `Receive()` always returns the Nth signal — buffering and ordering match Temporal
+  semantics. `ReceiveAsync()` is the non-blocking variant.
 - **Cancellation** — `WorkflowExecutionCancelRequested` sets a flag exposed as `ctx.IsCancelled()`.
   The workflow chooses how to react (finish, clean up); the cancel request schedules a workflow
   task, so a workflow parked on a signal `Receive()` re-runs and can observe the flag.
 
-A signal that must interrupt a *blocked activity await* mid-task, and queries (which run against
-live state after replay), still require the coroutine dispatcher.
+## Queries and selectors
+
+Both rely on the coroutine keeping live workflow state across a suspension:
+
+- **Queries** — `ctx.SetQueryHandler(name, fn)` registers a read-only handler (re-registered each
+  replay). When a query arrives, the workflow is replayed to its current suspension point and the
+  handler is invoked against the live, parked state, answering via `RespondQueryTaskCompleted` (or
+  `query_results` for queries attached to a workflow task). The client side is
+  `WorkflowHandle::Query<R>(type, args...)`.
+- **Selectors** — `workflow::Selector` waits on multiple futures and proceeds when any is ready
+  (the canonical "activity OR timeout" pattern), running the matching case's handler; `Select()`
+  parks via the coroutine when nothing is ready. An optional default makes it non-blocking.
 
 ## Activities
 

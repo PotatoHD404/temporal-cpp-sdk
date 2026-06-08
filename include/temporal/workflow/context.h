@@ -17,6 +17,8 @@
 
 namespace temporal::workflow {
 
+class Selector;
+
 // Immutable metadata about the currently executing workflow.
 struct WorkflowInfo {
   std::string workflow_id;
@@ -80,6 +82,8 @@ class Context {
   const DataConverter& data_converter() const { return *converter_; }
 
  private:
+  friend class Selector;
+
   template <class Ret, class Args, class Fn>
   internal::QueryFn MakeQueryFn(Fn handler) {
     const DataConverter* converter = converter_;

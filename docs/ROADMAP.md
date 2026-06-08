@@ -12,27 +12,27 @@ priority/dependency.
   `Start`/`Run`/`Stop`.
 - Workflows: sequential and parallel-await `ExecuteActivity<R>(...)`, timers (`NewTimer`/`Sleep`),
   typed args/results, failure propagation, activity retries (custom `RetryPolicy` honored).
-- Workflows: signals (`GetSignalChannel<T>().Receive()` / `ReceiveAsync`) and workflow cancellation
-  (`IsCancelled()`), reconstructed deterministically from history.
+- Workflows: signals (`GetSignalChannel<T>().Receive()` / `ReceiveAsync`), cancellation
+  (`IsCancelled()`), queries (`SetQueryHandler` + `WorkflowHandle::Query<R>`), and selectors
+  (`workflow::Selector`, the "activity OR timeout" pattern).
 - Activities: typed execution, application-error failures.
 - Data conversion: Nil / ByteSlice / JSON (nlohmann).
-- Engine: non-sticky history replay, deterministic command/event correlation, block-by-exception
-  suspension.
-- Tested: 11 unit tests + 9 end-to-end integration tests (timer, single + parallel activities,
+- Engine: non-sticky history replay, deterministic command/event correlation, and a stackful
+  **coroutine dispatcher** that keeps live workflow state across suspensions.
+- Tested: 18 unit tests + 12 end-to-end integration tests (timer, single + parallel activities,
   activity-failure propagation, RetryPolicy fail-fast, terminate, signal delivery + ordering,
-  observed cancellation, signal/cancel RPCs) — run against a dev server via `TEMPORAL_INTEGRATION=1`,
-  and in CI.
+  observed cancellation, live-state query, selector activity-vs-timeout both directions) — run
+  against a dev server via `TEMPORAL_INTEGRATION=1`, and in CI.
 
-> Coverage caveat: integration tests prove the paths listed above (including signal
-> delivery/ordering and observed cancellation). Replay is exercised for short workflows only, and
-> everything below is **not** implemented.
+> Coverage caveat: integration tests prove the paths listed above. Replay is exercised for short
+> workflows only (non-sticky; the coroutine is torn down per task), and everything below is **not**
+> implemented.
 
 ## Phase 1 — robustness & determinism hardening
 
-- **Stickiness + in-process workflow cache** keyed by run id; respond on a sticky task queue and
-  process incremental history.
-- **Stackful-coroutine dispatcher** (mirroring Go's `coroutineState`) to replace block-by-exception:
-  enables true mid-execution concurrency and removes the `catch(...)` caveat.
+- **Stickiness + in-process workflow cache** keyed by run id: keep the coroutine alive across tasks
+  on a sticky task queue + incremental history. The dispatcher already exists; this is the
+  efficiency upgrade (avoids re-running from full history and re-creating a thread per task).
 - **Non-determinism detection**: compare emitted commands against replayed history; surface
   mismatches per `WorkflowPanicPolicy`.
 - History **pagination** (`next_page_token`) for long histories.
@@ -40,11 +40,10 @@ priority/dependency.
 
 ## Phase 2 — workflow feature surface
 
-- **Queries** (`SetQueryHandler`), **Updates** (`SetUpdateHandler`) — need the coroutine dispatcher
-  (live state across a suspension).
+- **Updates** (`SetUpdateHandler`).
 - **Child workflows** (`ExecuteChildWorkflow`).
-- **Selectors** (`workflow.Selector` equivalent) and richer **cancellation scopes** (current
-  cancellation is observe-only via `IsCancelled()`).
+- Richer **cancellation scopes** (current cancellation is observe-only via `IsCancelled()`) and
+  selector **channel cases** (the current `Selector` supports future cases).
 - **SideEffect / MutableSideEffect**, **`GetVersion`** versioning.
 - **ContinueAsNew**.
 - **Local activities**.

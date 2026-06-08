@@ -13,7 +13,9 @@
 #include "temporal/api/command/v1/message.pb.h"
 #include "temporal/api/enums/v1/command_type.pb.h"
 #include "temporal/api/enums/v1/event_type.pb.h"
+#include "temporal/api/enums/v1/query.pb.h"
 #include "temporal/api/history/v1/message.pb.h"
+#include "temporal/api/query/v1/message.pb.h"
 
 #include "internal/coroutine.h"
 #include "internal/grpc_client.h"
@@ -29,6 +31,7 @@ namespace {
 namespace cmd = ::temporal::api::command::v1;
 namespace enums = ::temporal::api::enums::v1;
 namespace hist = ::temporal::api::history::v1;
+namespace query = ::temporal::api::query::v1;
 
 // Outcome of an activity, derived by scanning history.
 struct ActivityOutcome {
@@ -354,6 +357,29 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
                         std::move(input));
   runner.Run();
 
+  // A legacy direct-query task carries a single `query` and no new history; answer
+  // it via RespondQueryTaskCompleted, emitting no commands.
+  if (task.has_query()) {
+    wsv::RespondQueryTaskCompletedRequest qreq;
+    qreq.set_task_token(task.task_token());
+    try {
+      if (runner.IsDone()) {
+        throw ApplicationError("cannot query a completed workflow", "QueryFailed");
+      }
+      const Payloads answer =
+          runner.RunQuery(task.query().query_type(), FromProtoPayloads(task.query().query_args()));
+      qreq.set_completed_type(enums::QUERY_RESULT_TYPE_ANSWERED);
+      if (!answer.empty()) {
+        *qreq.mutable_query_result() = ToProtoPayloads(answer);
+      }
+    } catch (const std::exception& e) {
+      qreq.set_completed_type(enums::QUERY_RESULT_TYPE_FAILED);
+      qreq.set_error_message(e.what());
+    }
+    grpc_->RespondQueryTaskCompleted(qreq);
+    return;
+  }
+
   wsv::RespondWorkflowTaskCompletedRequest req;
   req.set_task_token(task.task_token());
   req.set_identity(grpc_->identity());
@@ -371,6 +397,25 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
     auto* c = req.add_commands();
     c->set_command_type(enums::COMMAND_TYPE_FAIL_WORKFLOW_EXECUTION);
     *c->mutable_fail_workflow_execution_command_attributes()->mutable_failure() = runner.failure();
+  }
+  // Answer any queries attached to this workflow task against the live state.
+  for (const auto& entry : task.queries()) {
+    query::WorkflowQueryResult result;
+    try {
+      if (runner.IsDone()) {
+        throw ApplicationError("cannot query a completed workflow", "QueryFailed");
+      }
+      const Payloads answer = runner.RunQuery(entry.second.query_type(),
+                                              FromProtoPayloads(entry.second.query_args()));
+      result.set_result_type(enums::QUERY_RESULT_TYPE_ANSWERED);
+      if (!answer.empty()) {
+        *result.mutable_answer() = ToProtoPayloads(answer);
+      }
+    } catch (const std::exception& e) {
+      result.set_result_type(enums::QUERY_RESULT_TYPE_FAILED);
+      result.set_error_message(e.what());
+    }
+    (*req.mutable_query_results())[entry.first] = result;
   }
   grpc_->RespondWorkflowTaskCompleted(req);
 }

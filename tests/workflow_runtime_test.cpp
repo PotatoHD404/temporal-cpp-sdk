@@ -10,6 +10,7 @@
 #include <temporal/converter/data_converter.h>
 #include <temporal/internal/workflow_outbound.h>
 #include <temporal/workflow/context.h>
+#include <temporal/workflow/selector.h>
 
 namespace {
 
@@ -146,6 +147,54 @@ TEST(WorkflowRuntime, CancellationFlagSurfaces) {
 
   workflow::Context ctx(&env, dc.get());
   EXPECT_TRUE(ctx.IsCancelled());
+}
+
+TEST(WorkflowRuntime, SelectorPicksTheReadyCase) {
+  const auto dc = DataConverter::Default();
+  FakeEnv env;
+  workflow::Context ctx(&env, dc.get());
+
+  auto ready_state = std::make_shared<internal::FutureState>();
+  ready_state->ready = true;
+  ready_state->result = dc->ToPayloads(std::string("R"));
+  const workflow::Future<std::string> ready(ready_state, dc.get(), &env);
+
+  const workflow::Future<std::string> pending(std::make_shared<internal::FutureState>(), dc.get(),
+                                              &env);
+
+  std::string picked;
+  workflow::Selector selector(ctx);
+  selector.AddFuture<std::string>(pending, [&](std::string v) { picked = "pending:" + v; });
+  selector.AddFuture<std::string>(ready, [&](std::string v) { picked = "ready:" + v; });
+  selector.Select();
+  EXPECT_EQ(picked, "ready:R");
+}
+
+TEST(WorkflowRuntime, SelectorRunsDefaultWhenNothingReady) {
+  const auto dc = DataConverter::Default();
+  FakeEnv env;
+  workflow::Context ctx(&env, dc.get());
+
+  const workflow::Future<std::string> pending(std::make_shared<internal::FutureState>(), dc.get(),
+                                              &env);
+  bool ran_default = false;
+  workflow::Selector selector(ctx);
+  selector.AddFuture<std::string>(pending, [](std::string) {});
+  selector.AddDefault([&] { ran_default = true; });
+  selector.Select();
+  EXPECT_TRUE(ran_default);
+}
+
+TEST(WorkflowRuntime, SelectorParksWhenNothingReadyAndNoDefault) {
+  const auto dc = DataConverter::Default();
+  FakeEnv env;
+  workflow::Context ctx(&env, dc.get());
+
+  const workflow::Future<std::string> pending(std::make_shared<internal::FutureState>(), dc.get(),
+                                              &env);
+  workflow::Selector selector(ctx);
+  selector.AddFuture<std::string>(pending, [](std::string) {});
+  EXPECT_THROW(selector.Select(), FakeSuspend);
 }
 
 }  // namespace

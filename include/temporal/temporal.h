@@ -12,3 +12,4 @@
 #include <temporal/workflow/channel.h>
 #include <temporal/workflow/context.h>
 #include <temporal/workflow/future.h>
+#include <temporal/workflow/selector.h>
