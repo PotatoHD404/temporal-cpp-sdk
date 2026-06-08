@@ -63,6 +63,10 @@ class FakeEnv : public internal::WorkflowOutbound {
 
   void RegisterUpdateHandler(std::string, internal::QueryFn) override {}
 
+  void RegisterUpdateValidator(std::string, internal::QueryFn v) override {
+    update_validator = std::move(v);
+  }
+
   std::optional<Payload> ReplaySideEffect() override {
     if (side_effect_cursor < recorded_side_effects.size()) {
       return recorded_side_effects[side_effect_cursor++];
@@ -116,6 +120,7 @@ class FakeEnv : public internal::WorkflowOutbound {
   std::vector<Payload> emitted_side_effects;  // captured on the live path
   std::unordered_map<std::string, int> recorded_versions;  // preset to simulate replay
   std::unordered_map<std::string, int> emitted_versions;   // captured on the live path
+  internal::QueryFn update_validator;                      // captured registered validator
 };
 
 TEST(WorkflowRuntime, ExecuteActivityReturnsResultWhenReady) {
@@ -293,6 +298,25 @@ TEST(WorkflowRuntime, GetVersionReturnsDefaultWhenReplayingPreVersionHistory) {
   const auto dc = DataConverter::Default();
   workflow::Context ctx(&env, dc.get());
   EXPECT_EQ(ctx.GetVersion("new-change", workflow::kDefaultVersion, 3), workflow::kDefaultVersion);
+}
+
+TEST(WorkflowRuntime, UpdateValidatorWrapperRejectsViaThrow) {
+  // SetUpdateHandler-with-validator wires a validator that decodes the same args
+  // as the handler and propagates a throw (which the engine turns into a
+  // rejection). Valid input passes; invalid input throws.
+  FakeEnv env;
+  const auto dc = DataConverter::Default();
+  workflow::Context ctx(&env, dc.get());
+  ctx.SetUpdateHandler(
+      "add", [](int n) { return n; },
+      [](int n) {
+        if (n <= 0) {
+          throw temporal::ApplicationError("must be positive", "InvalidUpdate");
+        }
+      });
+  ASSERT_TRUE(env.update_validator != nullptr);
+  EXPECT_NO_THROW(env.update_validator(dc->ToPayloads(5)));
+  EXPECT_THROW(env.update_validator(dc->ToPayloads(-1)), std::exception);
 }
 
 }  // namespace

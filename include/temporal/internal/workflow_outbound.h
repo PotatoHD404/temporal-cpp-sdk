@@ -90,6 +90,11 @@ class WorkflowOutbound {
   // (accepted + completed) and may mutate workflow state.
   virtual void RegisterUpdateHandler(std::string name, QueryFn handler) = 0;
 
+  // Register an optional read-only validator for an update. It runs before the
+  // update is accepted; throwing rejects the update ephemerally (no history
+  // entry), so the handler never runs and workflow state is untouched.
+  virtual void RegisterUpdateValidator(std::string name, QueryFn validator) = 0;
+
   // SideEffect: advance the deterministic side-effect counter and return the
   // value recorded in history for this call, or nullopt if there is none yet
   // (the caller then runs the function and records the result via

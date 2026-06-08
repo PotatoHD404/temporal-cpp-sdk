@@ -102,6 +102,18 @@ class Context {
         std::move(name), MakeQueryFn<typename Sig::ret, typename Sig::args>(std::move(handler)));
   }
 
+  // Register an update handler with a read-only validator. The validator takes
+  // the same arguments as the handler and is run first; if it throws, the update
+  // is rejected before acceptance (nothing is written to history and the handler
+  // never runs). Validators must not mutate state or schedule activities/timers.
+  template <class Fn, class ValidatorFn>
+  void SetUpdateHandler(std::string name, Fn handler, ValidatorFn validator) {
+    using Sig = internal::fn_sig<std::decay_t<Fn>>;
+    env_->RegisterUpdateValidator(name, MakeValidatorFn<typename Sig::args>(std::move(validator)));
+    env_->RegisterUpdateHandler(
+        std::move(name), MakeQueryFn<typename Sig::ret, typename Sig::args>(std::move(handler)));
+  }
+
   // Capture the result of a non-deterministic operation exactly once. The first
   // time it runs, `fn` executes and its result is recorded to history; on every
   // replay the recorded value is returned without running `fn` again. Mirrors
@@ -150,6 +162,19 @@ class Context {
         Ret result = std::apply([&](auto&... a) { return handler(a...); }, args);
         return Payloads{converter->ToPayload(result)};
       }
+    };
+  }
+
+  // Wraps a read-only update validator: decodes the same args as the handler and
+  // invokes the validator (whose return value is ignored). Throwing rejects.
+  template <class Args, class Fn>
+  internal::QueryFn MakeValidatorFn(Fn validator) {
+    const DataConverter* converter = converter_;
+    return [validator = std::move(validator), converter](const Payloads& in) -> Payloads {
+      auto args = internal::DecodeArgs<Args>(*converter, in,
+                                             std::make_index_sequence<std::tuple_size_v<Args>>{});
+      std::apply([&](auto&... a) { validator(a...); }, args);
+      return Payloads{};
     };
   }
 

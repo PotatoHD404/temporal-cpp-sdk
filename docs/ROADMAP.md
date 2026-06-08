@@ -48,8 +48,10 @@ priority/dependency.
 
 ## Phase 2 — workflow feature surface
 
-- **Update validators** (`SetUpdateHandler` exists; add the optional validation phase / rejection)
-  and **replay re-application** of updates after a cache eviction.
+- **Update validators** ✅ — `SetUpdateHandler(name, handler, validator)`; the read-only validator
+  runs before acceptance, and a throw rejects the update with an ephemeral `Rejection` protocol
+  message (no command, so nothing is written to history). **Replay re-application** of accepted
+  updates after a cache eviction remains.
 - Richer **cancellation scopes** (current cancellation is observe-only via `IsCancelled()`) and
   selector **channel cases** (the current `Selector` supports future cases).
 - **SideEffect** ✅ + **`GetVersion`** versioning ✅ — marker record/replay (RecordMarker command;

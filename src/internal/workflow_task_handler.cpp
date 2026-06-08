@@ -449,6 +449,19 @@ class WorkflowRunner final : public WorkflowOutbound {
     update_handlers_.insert_or_assign(std::move(name), std::move(handler));
   }
 
+  void RegisterUpdateValidator(std::string name, QueryFn validator) override {
+    update_validators_.insert_or_assign(std::move(name), std::move(validator));
+  }
+
+  // Run the registered validator for an update, if one exists. Throws to reject
+  // the update (the caller turns the exception into an ephemeral Rejection).
+  void ValidateUpdate(const std::string& name, const Payloads& args) {
+    const auto it = update_validators_.find(name);
+    if (it != update_validators_.end()) {
+      it->second(args);  // QueryFn; return value ignored, a throw rejects
+    }
+  }
+
   const workflow::WorkflowInfo& Info() const override { return info_; }
   log::Logger& Logger() const override { return *logger_; }
   bool IsReplaying() const override { return is_replaying_; }
@@ -657,6 +670,7 @@ class WorkflowRunner final : public WorkflowOutbound {
   std::unordered_map<std::string, std::size_t> signal_cursor_;
   std::unordered_map<std::string, QueryFn> query_handlers_;
   std::unordered_map<std::string, QueryFn> update_handlers_;
+  std::unordered_map<std::string, QueryFn> update_validators_;
   std::unordered_map<std::string, std::shared_ptr<FutureState>> activity_futures_;  // by activity_id
   std::unordered_map<std::string, std::shared_ptr<FutureState>> timer_futures_;     // by timer_id
   std::unordered_map<std::string, std::shared_ptr<FutureState>> child_futures_;     // by child wf id
@@ -889,15 +903,36 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
   for (const auto& c : runner->commands()) {
     *req.add_commands() = c;
   }
-  // Process workflow updates delivered as protocol messages: accept each, run its
-  // handler against live state, and complete it. Each is recorded via a
-  // PROTOCOL_MESSAGE command referencing the message.
+  // Process workflow updates delivered as protocol messages: optionally validate,
+  // then accept, run the handler against live state, and complete. A validator
+  // that throws rejects the update before acceptance — a Rejection message with
+  // no command, so nothing is written to history and the handler never runs.
   for (const auto& msg : task.messages()) {
     update::Request request;
     if (!msg.body().UnpackTo(&request)) {
       continue;  // not an update request
     }
     const std::string& instance_id = msg.protocol_instance_id();
+    const std::string update_name = request.input().name();
+    const Payloads update_args = FromProtoPayloads(request.input().args());
+
+    // Validation phase. The validator runs only on the live path (an inbound
+    // update message); on replay the acceptance is already in history. Throwing
+    // rejects the update ephemerally: a Rejection message and NO command.
+    try {
+      runner->ValidateUpdate(update_name, update_args);
+    } catch (const std::exception& e) {
+      auto* reject_msg = req.add_messages();
+      reject_msg->set_id(instance_id + "/reject");
+      reject_msg->set_protocol_instance_id(instance_id);
+      update::Rejection rejection;
+      rejection.set_rejected_request_message_id(msg.id());
+      rejection.set_rejected_request_sequencing_event_id(msg.event_id());
+      *rejection.mutable_rejected_request() = request;
+      *rejection.mutable_failure() = MakeApplicationFailure(e.what(), "UpdateValidationRejected");
+      static_cast<void>(reject_msg->mutable_body()->PackFrom(rejection));
+      continue;  // do not accept, do not run the handler — no history written
+    }
 
     // Accept the update (matches the Go SDK's message body, including the
     // request's sequencing event id).
@@ -915,8 +950,7 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
     response.mutable_meta()->set_update_id(instance_id);
     response.mutable_meta()->set_identity(grpc_->identity());
     try {
-      const Payloads result =
-          runner->RunUpdate(request.input().name(), FromProtoPayloads(request.input().args()));
+      const Payloads result = runner->RunUpdate(update_name, update_args);
       *response.mutable_outcome()->mutable_success() = ToProtoPayloads(result);
     } catch (const std::exception& e) {
       *response.mutable_outcome()->mutable_failure() = MakeApplicationFailure(e.what(), "UpdateFailed");

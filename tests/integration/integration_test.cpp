@@ -159,6 +159,21 @@ int UpdatableWorkflow(temporal::workflow::Context& ctx) {
   return total;
 }
 
+// Like UpdatableWorkflow, but a read-only validator rejects non-positive inputs
+// before acceptance, so they never reach the handler or get written to history.
+int ValidatedUpdateWorkflow(temporal::workflow::Context& ctx) {
+  int total = 0;
+  ctx.SetUpdateHandler(
+      "add", [&](int n) { total += n; return total; },
+      [](int n) {
+        if (n <= 0) {
+          throw temporal::ApplicationError("must be positive", "InvalidUpdate");
+        }
+      });
+  ctx.GetSignalChannel<std::string>("stop").Receive();
+  return total;
+}
+
 // Runs longer than its heartbeat timeout but heartbeats to stay alive.
 std::string HeartbeatActivity(temporal::activity::Context& ctx, int) {
   for (int i = 0; i < 5; ++i) {
@@ -562,6 +577,34 @@ TEST_F(IntegrationTest, MarkersRecordOnceAndReplayAcrossRestart) {
   EXPECT_EQ(handle.Result<int>(), 2100);     // GetVersion->2 (x1000) + SideEffect->100
   EXPECT_EQ(g_side_effect_calls.load(), 1);  // replay did NOT re-run the side-effect function
   worker_b.Stop();
+}
+
+// An update validator rejects invalid input before acceptance: the client's
+// Update throws, the handler never runs, and (because a rejection is not written
+// to history) workflow state is unaffected.
+TEST_F(IntegrationTest, UpdateValidatorRejectsInvalidInput) {
+  const auto tq = UniqueTaskQueue("update-validate");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("ValidatedUpdateWorkflow", ValidatedUpdateWorkflow);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "ValidatedUpdateWorkflow");
+  const auto dc = temporal::DataConverter::Default();
+
+  // Valid updates are accepted and return the new running total.
+  EXPECT_EQ(handle.Update<int>("add", 5), 5);
+  EXPECT_EQ(handle.Update<int>("add", 7), 12);
+
+  // An invalid update is rejected by the validator: Update throws.
+  EXPECT_THROW(handle.Update<int>("add", -3), std::exception);
+
+  // A subsequent valid update proves the rejection left state untouched (12 + 1).
+  EXPECT_EQ(handle.Update<int>("add", 1), 13);
+
+  handle.Signal("stop", dc->ToPayloads(std::string("done")));
+  EXPECT_EQ(handle.Result<int>(), 13);
+  worker.Stop();
 }
 
 }  // namespace

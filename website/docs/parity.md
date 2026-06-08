@@ -55,7 +55,7 @@ cache. This page is the honest accounting.
 | Signals (channels, buffered/ordered) | ✅ | |
 | Queries (`SetQueryHandler`) | ✅ | live-state, read-only |
 | Updates (`SetUpdateHandler`) | ✅ | accept + complete on the live path |
-| Update validators | ❌ | no pre-acceptance rejection phase |
+| Update validators | ✅ | read-only validator; rejection is ephemeral (no history entry) |
 | Selectors | 🟡 | future cases; no channel cases yet |
 | Child workflows | ✅ | basic; no parent-close-policy / cancel / signal-child |
 | Continue-as-new | ✅ | |
@@ -121,9 +121,8 @@ Rough priority order (see the repo's `docs/ROADMAP.md` for detail):
 1. **Determinism hardening** — ✅ non-determinism detection (commands matched to history on
    replay); remaining: history pagination, bounded sticky-cache LRU, heartbeat throttling + cancel
    detection.
-2. **Workflow feature surface** — ✅ `SideEffect` + `GetVersion` versioning; remaining: update
-   validators, richer cancellation scopes, selector channel cases, MutableSideEffect, local
-   activities.
+2. **Workflow feature surface** — ✅ `SideEffect` + `GetVersion` + update validators; remaining:
+   richer cancellation scopes, selector channel cases, MutableSideEffect, local activities.
 3. **Production concerns** — TLS/mTLS + API-key auth, interceptors, metrics & tracing,
    proto/protoJSON converters + payload codecs, worker tuning.
 4. **Breadth** — schedules, Nexus, worker versioning, a replay/test framework, search attributes,
