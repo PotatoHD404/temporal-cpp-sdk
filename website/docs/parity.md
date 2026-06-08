@@ -76,7 +76,7 @@ cache. This page is the honest accounting.
 | Server-driven retries (`RetryPolicy`) | ✅ | |
 | Application errors (retryable / not) | ✅ | |
 | Heartbeating | ✅ | `Context::IsCancelled` observes the server's cancel; throttling ❌ |
-| Async (manual) completion | ❌ | |
+| Async (manual) completion | ✅ | `Context::SetWillCompleteAsync` + `Client::CompleteActivity`/`FailActivity` (by task token) |
 | Activity-side cancellation | ✅ | workflow `Future::Cancel` → `RequestCancelActivityTask`; activity sees it via `Context::IsCancelled` |
 
 ## Data & serialization

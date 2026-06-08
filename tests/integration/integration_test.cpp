@@ -248,6 +248,23 @@ std::string UpsertSaWorkflow(temporal::workflow::Context& ctx, std::string val) 
   return "upserted";
 }
 
+std::atomic<bool> g_async_captured{false};
+std::string g_async_token;  // NOLINT: test handoff for async completion
+
+// Defers completion: captures its task token, signals async, returns (ignored).
+std::string AsyncCaptureActivity(temporal::activity::Context& ctx, int) {
+  g_async_token = ctx.GetInfo().task_token;
+  ctx.SetWillCompleteAsync();
+  g_async_captured.store(true);
+  return "";
+}
+
+std::string AsyncActivityWorkflow(temporal::workflow::Context& ctx) {
+  temporal::ActivityOptions o;
+  o.start_to_close_timeout = 30s;
+  return ctx.ExecuteActivity<std::string>(o, "AsyncCaptureActivity", 0).Get();
+}
+
 // Heartbeats until it observes a server cancel request, then returns "cancelled".
 std::string CancellableActivity(temporal::activity::Context& ctx, int) {
   for (int i = 0; i < 100; ++i) {
@@ -1031,6 +1048,28 @@ TEST_F(IntegrationTest, StartTimeSearchAttributeIsQueryable) {
   }
   ASSERT_EQ(listed.size(), 1U);
   EXPECT_EQ(listed[0].run_id, handle.run_id());
+  worker.Stop();
+}
+
+// An activity defers completion (SetWillCompleteAsync) and is completed
+// out-of-band via Client::CompleteActivity; the workflow receives that result.
+TEST_F(IntegrationTest, AsyncActivityCompletion) {
+  g_async_captured.store(false);
+  g_async_token.clear();
+  const auto tq = UniqueTaskQueue("async-act");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("AsyncActivityWorkflow", AsyncActivityWorkflow);
+  worker.RegisterActivity("AsyncCaptureActivity", AsyncCaptureActivity);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "AsyncActivityWorkflow");
+  for (int i = 0; i < 100 && !g_async_captured.load(); ++i) {
+    std::this_thread::sleep_for(100ms);
+  }
+  ASSERT_TRUE(g_async_captured.load());  // activity ran and deferred
+  client_->CompleteActivity(g_async_token, std::string("async-result"));
+  EXPECT_EQ(handle.Result<std::string>(), "async-result");
   worker.Stop();
 }
 

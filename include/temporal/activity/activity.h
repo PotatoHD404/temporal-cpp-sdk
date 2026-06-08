@@ -18,6 +18,7 @@ struct ActivityInfo {
   std::string workflow_id;
   std::string run_id;
   std::string task_queue;
+  std::string task_token;  // opaque; pass to Client::CompleteActivity for async completion
   int attempt = 1;
 };
 
@@ -52,11 +53,19 @@ class Context {
   // this and return promptly when it becomes true.
   bool IsCancelled() const { return cancel_requested_; }
 
+  // Defer completion: the worker will NOT report a result when the function
+  // returns. The activity stays open until someone calls Client::CompleteActivity
+  // (or FailActivity) with this context's GetInfo().task_token. The function's
+  // return value is ignored in that case. Mirrors Go's activity.ErrResultPending.
+  void SetWillCompleteAsync() { will_complete_async_ = true; }
+  bool WillCompleteAsync() const { return will_complete_async_; }
+
  private:
   ActivityInfo info_;
   const DataConverter* converter_;
   std::function<bool(const Payloads&)> heartbeat_;
   bool cancel_requested_ = false;
+  bool will_complete_async_ = false;
 };
 
 }  // namespace activity

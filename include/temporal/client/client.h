@@ -140,6 +140,16 @@ class Client {
   bool DescribeSchedule(const std::string& schedule_id);
   void DeleteSchedule(const std::string& schedule_id);
 
+  // Complete or fail an activity that deferred completion via
+  // activity::Context::SetWillCompleteAsync(), identified by its task token
+  // (activity::Context::GetInfo().task_token).
+  template <class... Args>
+  void CompleteActivity(const std::string& task_token, const Args&... result) {
+    CompleteActivityPayloads(task_token, converter_->ToPayloads(result...));
+  }
+  void FailActivity(const std::string& task_token, const std::string& message,
+                    const std::string& type = "ApplicationError");
+
   // Accessors used by Worker.
   const std::shared_ptr<internal::GrpcClient>& grpc() const { return grpc_; }
   const std::shared_ptr<DataConverter>& data_converter() const { return converter_; }
@@ -155,6 +165,7 @@ class Client {
                                                  std::string_view workflow_type,
                                                  std::string_view signal_name,
                                                  const Payloads& signal_input, const Payloads& input);
+  void CompleteActivityPayloads(const std::string& task_token, const Payloads& result);
 
   std::shared_ptr<internal::GrpcClient> grpc_;
   std::shared_ptr<DataConverter> converter_;

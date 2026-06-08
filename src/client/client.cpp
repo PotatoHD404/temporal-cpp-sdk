@@ -376,4 +376,27 @@ void Client::DeleteSchedule(const std::string& schedule_id) {
   grpc_->DeleteSchedule(req);
 }
 
+void Client::CompleteActivityPayloads(const std::string& task_token, const Payloads& result) {
+  internal::wsv::RespondActivityTaskCompletedRequest req;
+  req.set_namespace_(ns_);
+  req.set_task_token(task_token);
+  req.set_identity(identity_);
+  if (!result.empty()) {
+    *req.mutable_result() = internal::ToProtoPayloads(result);
+  }
+  grpc_->RespondActivityTaskCompleted(req);
+}
+
+void Client::FailActivity(const std::string& task_token, const std::string& message,
+                          const std::string& type) {
+  internal::wsv::RespondActivityTaskFailedRequest req;
+  req.set_namespace_(ns_);
+  req.set_task_token(task_token);
+  req.set_identity(identity_);
+  auto* failure = req.mutable_failure();
+  failure->set_message(message);
+  failure->mutable_application_failure_info()->set_type(type);
+  grpc_->RespondActivityTaskFailed(req);
+}
+
 }  // namespace temporal::client

@@ -30,6 +30,7 @@ void ActivityTaskHandler::Handle(const wsv::PollActivityTaskQueueResponse& task)
   info.workflow_id = task.workflow_execution().workflow_id();
   info.run_id = task.workflow_execution().run_id();
   info.task_queue = task_queue_;
+  info.task_token = task.task_token();
   info.attempt = task.attempt();
 
   auto heartbeat = [this, task_token = task.task_token()](const Payloads& details) -> bool {
@@ -58,6 +59,9 @@ void ActivityTaskHandler::Handle(const wsv::PollActivityTaskQueueResponse& task)
   const Payloads input = FromProtoPayloads(task.input());
   try {
     const Payloads result = it->second(ctx, input);
+    if (ctx.WillCompleteAsync()) {
+      return;  // left open; completed out-of-band via Client::CompleteActivity/FailActivity
+    }
     wsv::RespondActivityTaskCompletedRequest req;
     req.set_task_token(task.task_token());
     req.set_identity(grpc_->identity());
