@@ -1,0 +1,39 @@
+#pragma once
+
+#include <memory>
+#include <string>
+#include <unordered_map>
+
+#include "temporal/api/workflowservice/v1/request_response.pb.h"
+
+#include <temporal/converter/data_converter.h>
+#include <temporal/log/logger.h>
+#include <temporal/worker/worker.h>
+
+namespace temporal::internal {
+
+namespace wsv = ::temporal::api::workflowservice::v1;
+
+class GrpcClient;
+
+// Runs polled activity tasks. Activities execute in real time (no determinism
+// constraints), so this is a straightforward decode -> invoke -> respond loop.
+class ActivityTaskHandler {
+ public:
+  ActivityTaskHandler(GrpcClient* grpc, std::shared_ptr<DataConverter> converter,
+                      std::shared_ptr<log::Logger> logger, std::string task_queue);
+
+  void Register(std::string name, worker::ActivityFn fn);
+  bool has_activities() const { return !activities_.empty(); }
+
+  void Handle(const wsv::PollActivityTaskQueueResponse& task);
+
+ private:
+  GrpcClient* grpc_;
+  std::shared_ptr<DataConverter> converter_;
+  std::shared_ptr<log::Logger> logger_;
+  std::string task_queue_;
+  std::unordered_map<std::string, worker::ActivityFn> activities_;
+};
+
+}  // namespace temporal::internal
