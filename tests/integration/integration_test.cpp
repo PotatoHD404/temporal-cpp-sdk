@@ -713,4 +713,20 @@ TEST_F(IntegrationTest, MemoIsAttachedAndReturnedByDescribe) {
   worker.Stop();
 }
 
+// Signal-with-start creates a not-yet-running workflow and delivers a signal to
+// it atomically.
+TEST_F(IntegrationTest, SignalWithStartCreatesAndSignals) {
+  const auto tq = UniqueTaskQueue("sigwithstart");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("GreetBySignalWorkflow", GreetBySignalWorkflow);  // waits for "setName"
+  worker.Start();
+  const auto dc = temporal::DataConverter::Default();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->SignalWithStartWorkflow(o, "GreetBySignalWorkflow", "setName",
+                                                 dc->ToPayloads(std::string("Ada")));
+  EXPECT_EQ(handle.Result<std::string>(), "Hello, Ada");
+  worker.Stop();
+}
+
 }  // namespace

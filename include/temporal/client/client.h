@@ -110,6 +110,17 @@ class Client {
     return StartWorkflowPayloads(options, workflow_type, input);
   }
 
+  // Signal a workflow, starting it first if it isn't already running (atomic).
+  // `signal_input` is the pre-encoded signal argument (use `dc->ToPayloads(v)`);
+  // `workflow_args` are the workflow's start arguments.
+  template <class... Args>
+  WorkflowHandle SignalWithStartWorkflow(const StartWorkflowOptions& options,
+                                         std::string_view workflow_type, std::string_view signal_name,
+                                         const Payloads& signal_input, const Args&... workflow_args) {
+    Payloads input = converter_->ToPayloads(workflow_args...);
+    return SignalWithStartWorkflowPayloads(options, workflow_type, signal_name, signal_input, input);
+  }
+
   WorkflowHandle GetHandle(std::string workflow_id, std::string run_id = "");
 
   // Accessors used by Worker.
@@ -123,6 +134,10 @@ class Client {
   Client() = default;
   WorkflowHandle StartWorkflowPayloads(const StartWorkflowOptions& options,
                                        std::string_view workflow_type, const Payloads& input);
+  WorkflowHandle SignalWithStartWorkflowPayloads(const StartWorkflowOptions& options,
+                                                 std::string_view workflow_type,
+                                                 std::string_view signal_name,
+                                                 const Payloads& signal_input, const Payloads& input);
 
   std::shared_ptr<internal::GrpcClient> grpc_;
   std::shared_ptr<DataConverter> converter_;

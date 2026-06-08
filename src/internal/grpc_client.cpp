@@ -59,6 +59,15 @@ wsv::DescribeWorkflowExecutionResponse GrpcClient::DescribeWorkflowExecution(
       });
 }
 
+wsv::SignalWithStartWorkflowExecutionResponse GrpcClient::SignalWithStartWorkflowExecution(
+    const wsv::SignalWithStartWorkflowExecutionRequest& req) {
+  return UnaryCall<wsv::SignalWithStartWorkflowExecutionResponse>(
+      "SignalWithStartWorkflowExecution", false,
+      [&](grpc::ClientContext* c, wsv::SignalWithStartWorkflowExecutionResponse* p) {
+        return stub_->SignalWithStartWorkflowExecution(c, req, p);
+      });
+}
+
 wsv::GetWorkflowExecutionHistoryResponse GrpcClient::GetWorkflowExecutionHistory(
     const wsv::GetWorkflowExecutionHistoryRequest& req) {
   return UnaryCall<wsv::GetWorkflowExecutionHistoryResponse>(

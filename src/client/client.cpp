@@ -247,4 +247,45 @@ WorkflowHandle Client::StartWorkflowPayloads(const StartWorkflowOptions& options
   return {grpc_, converter_, ns_, workflow_id, resp.run_id()};
 }
 
+WorkflowHandle Client::SignalWithStartWorkflowPayloads(const StartWorkflowOptions& options,
+                                                       std::string_view workflow_type,
+                                                       std::string_view signal_name,
+                                                       const Payloads& signal_input,
+                                                       const Payloads& input) {
+  const std::string workflow_id = options.id.empty() ? internal::NewUuid() : options.id;
+
+  internal::wsv::SignalWithStartWorkflowExecutionRequest req;
+  req.set_namespace_(ns_);
+  req.set_workflow_id(workflow_id);
+  req.mutable_workflow_type()->set_name(std::string(workflow_type));
+  req.mutable_task_queue()->set_name(options.task_queue);
+  if (!input.empty()) {
+    *req.mutable_input() = internal::ToProtoPayloads(input);
+  }
+  req.set_signal_name(std::string(signal_name));
+  if (!signal_input.empty()) {
+    *req.mutable_signal_input() = internal::ToProtoPayloads(signal_input);
+  }
+  req.set_identity(identity_);
+  req.set_request_id(internal::NewUuid());
+  if (options.execution_timeout.count() > 0) {
+    *req.mutable_workflow_execution_timeout() = internal::ToProtoDuration(options.execution_timeout);
+  }
+  if (options.run_timeout.count() > 0) {
+    *req.mutable_workflow_run_timeout() = internal::ToProtoDuration(options.run_timeout);
+  }
+  if (options.task_timeout.count() > 0) {
+    *req.mutable_workflow_task_timeout() = internal::ToProtoDuration(options.task_timeout);
+  }
+  if (options.retry_policy_set) {
+    *req.mutable_retry_policy() = internal::ToProtoRetryPolicy(options.retry_policy);
+  }
+  for (const auto& [key, value] : options.memo) {
+    (*req.mutable_memo()->mutable_fields())[key] = internal::ToProtoPayload(value);
+  }
+
+  const auto resp = grpc_->SignalWithStartWorkflowExecution(req);
+  return {grpc_, converter_, ns_, workflow_id, resp.run_id()};
+}
+
 }  // namespace temporal::client

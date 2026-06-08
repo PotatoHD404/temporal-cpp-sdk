@@ -27,7 +27,7 @@ cache. This page is the honest accounting.
 | Signal / Query / Update | ✅ | synchronous query & update |
 | Cancel / Terminate | ✅ | |
 | Get handle to existing run | ✅ | |
-| Signal-with-start | ❌ | |
+| Signal-with-start | ✅ | `Client::SignalWithStartWorkflow` |
 | List / count / describe workflows | 🟡 | `Describe` ✅ (status + memo); list/count ❌ |
 | Reset / batch operations | ❌ | |
 | Schedules client | ❌ | create/update/delete/list/trigger/pause |
