@@ -64,7 +64,7 @@ cache. This page is the honest accounting.
 | `GetVersion` / patching | ✅ | marker-based; `kDefaultVersion` on pre-version history |
 | SideEffect / MutableSideEffect | 🟡 | `SideEffect` ✅ (marker record/replay); MutableSideEffect ❌ |
 | Local activities | ❌ | |
-| External-workflow signal/cancel | ❌ | |
+| External-workflow signal/cancel | 🟡 | cancel ✅ (`CancelExternalWorkflow`); signal ❌ |
 | Search attributes / memo / upsert | 🟡 | memo ✅ (start + `Describe`); search attributes / upsert ❌ |
 | Header / context propagation | ❌ | |
 

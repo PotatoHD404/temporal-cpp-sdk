@@ -443,12 +443,22 @@ class WorkflowRunner final : public WorkflowOutbound {
           {CommandEvent::Kind::RequestCancelExternalWorkflow, state->op_id, ""});
       const auto child = scan_.children.find(state->op_id);
       if (!(child != scan_.children.end() && child->second.cancel_requested)) {
-        EmitRequestCancelExternalWorkflow(state->op_id);
+        EmitRequestCancelExternalWorkflow(state->op_id, /*child_only=*/true);
       }
       return;
     }
     logger_->Warn("cancellation not supported for this operation",
                   {log::F("op_id", state->op_id)});
+  }
+
+  void CancelExternalWorkflow(std::string_view workflow_id) override {
+    // Request cancellation of an arbitrary (non-child) workflow by id.
+    const std::string id(workflow_id);
+    produced_commands_.push_back({CommandEvent::Kind::RequestCancelExternalWorkflow, id, ""});
+    const auto it = scan_.children.find(id);
+    if (!(it != scan_.children.end() && it->second.cancel_requested)) {
+      EmitRequestCancelExternalWorkflow(id, /*child_only=*/false);
+    }
   }
 
   std::shared_ptr<FutureState> StartChildWorkflow(std::string_view workflow_type,
@@ -826,13 +836,13 @@ class WorkflowRunner final : public WorkflowOutbound {
     commands_.push_back(std::move(c));
   }
 
-  void EmitRequestCancelExternalWorkflow(const std::string& workflow_id) {
+  void EmitRequestCancelExternalWorkflow(const std::string& workflow_id, bool child_only) {
     cmd::Command c;
     c.set_command_type(enums::COMMAND_TYPE_REQUEST_CANCEL_EXTERNAL_WORKFLOW_EXECUTION);
     auto* attr = c.mutable_request_cancel_external_workflow_execution_command_attributes();
     attr->set_namespace_(info_.ns);
     attr->set_workflow_id(workflow_id);
-    attr->set_child_workflow_only(true);
+    attr->set_child_workflow_only(child_only);
     commands_.push_back(std::move(c));
   }
 

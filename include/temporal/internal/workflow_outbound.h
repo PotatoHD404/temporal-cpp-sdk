@@ -86,6 +86,10 @@ class WorkflowOutbound {
   // and resolves the future as cancelled so an awaiter unblocks immediately.
   virtual void Cancel(const std::shared_ptr<FutureState>& state) = 0;
 
+  // Request cancellation of an arbitrary external workflow by id (not a child
+  // future): emits RequestCancelExternalWorkflowExecution with child_workflow_only=false.
+  virtual void CancelExternalWorkflow(std::string_view workflow_id) = 0;
+
   // Consume the next buffered signal for `name` into `out`, advancing a
   // deterministic per-name cursor; returns false if none remain this run.
   virtual bool TryConsumeSignal(std::string_view name, Payloads& out) = 0;

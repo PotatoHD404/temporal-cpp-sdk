@@ -93,6 +93,12 @@ class Context {
     return Future<void>(env_->AwaitCancellation(), converter_, env_);
   }
 
+  // Request cancellation of another running workflow by id (fire-and-forget).
+  // Mirrors `workflow.RequestCancelExternalWorkflow`.
+  void CancelExternalWorkflow(const std::string& workflow_id) {
+    env_->CancelExternalWorkflow(workflow_id);
+  }
+
   // Register a query handler `R Fn(Args...)`, à la `workflow.SetQueryHandler`.
   // Handlers must be read-only (no activities/timers): they run against live
   // workflow state when a query arrives. Re-registering replaces the handler.

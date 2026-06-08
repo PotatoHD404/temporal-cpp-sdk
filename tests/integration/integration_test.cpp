@@ -226,6 +226,14 @@ std::string CancelChildWorkflow(temporal::workflow::Context& ctx) {
   return child.Get();
 }
 
+// Cancels an unrelated workflow by id (external cancellation), then completes.
+// Stays alive briefly so the cancel is delivered before this workflow closes.
+std::string CancelExternalWf(temporal::workflow::Context& ctx, std::string target_id) {
+  ctx.CancelExternalWorkflow(target_id);
+  ctx.Sleep(std::chrono::seconds(3));
+  return "done";
+}
+
 // Heartbeats until it observes a server cancel request, then returns "cancelled".
 std::string CancellableActivity(temporal::activity::Context& ctx, int) {
   for (int i = 0; i < 100; ++i) {
@@ -941,6 +949,24 @@ TEST_F(IntegrationTest, ChildWorkflowCancellation) {
   o.task_queue = tq;
   auto handle = client_->StartWorkflow(o, "CancelChildWorkflow");
   EXPECT_EQ(handle.Result<std::string>(), "cancelled");
+  worker.Stop();
+}
+
+// One workflow cancels another, unrelated workflow by id (external cancellation).
+// The target awaits cancellation and finishes "cancelled".
+TEST_F(IntegrationTest, ExternalWorkflowCancellation) {
+  const auto tq = UniqueTaskQueue("ext-cancel");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("CancelAwareWorkflow", CancelAwareWorkflow);
+  worker.RegisterWorkflow("CancelExternalWf", CancelExternalWf);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto target = client_->StartWorkflow(o, "CancelAwareWorkflow");
+  std::this_thread::sleep_for(1s);  // let the target start + park on cancellation
+  auto canceller = client_->StartWorkflow(o, "CancelExternalWf", target.id());
+  EXPECT_EQ(canceller.Result<std::string>(), "done");      // canceller emitted the cancel
+  EXPECT_EQ(target.Result<std::string>(), "cancelled");    // target observed it
   worker.Stop();
 }
 

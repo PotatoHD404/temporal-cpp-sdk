@@ -66,6 +66,8 @@ class FakeEnv : public internal::WorkflowOutbound {
     }
   }
 
+  void CancelExternalWorkflow(std::string_view) override {}
+
   void RegisterQueryHandler(std::string, internal::QueryFn) override {}
 
   void RegisterUpdateHandler(std::string, internal::QueryFn) override {}
