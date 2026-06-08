@@ -128,6 +128,9 @@ void WorkerImpl::WorkflowPollLoop(bool sticky) {
         continue;
       }
       workflow_handler_.Handle(resp);
+      if (options_.metrics_handler) {
+        options_.metrics_handler->Counter("temporal_workflow_task_handled", 1, {});
+      }
     } catch (const std::exception& e) {
       if (stop_.load()) {
         break;
@@ -154,6 +157,9 @@ void WorkerImpl::ActivityPollLoop() {
         continue;
       }
       activity_handler_.Handle(resp);
+      if (options_.metrics_handler) {
+        options_.metrics_handler->Counter("temporal_activity_task_handled", 1, {});
+      }
     } catch (const std::exception& e) {
       if (stop_.load()) {
         break;

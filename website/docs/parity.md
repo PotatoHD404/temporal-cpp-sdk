@@ -107,7 +107,7 @@ cache. This page is the honest accounting.
 |---|---|---|
 | TLS / mTLS / API-key auth | 🟡 | implemented (`ClientOptions::tls` + `api_key`, SslCredentials + per-call auth); **e2e-unverified locally** — no TLS Temporal server in the harness |
 | Interceptors (client + worker) | ❌ | |
-| Metrics | ❌ | |
+| Metrics | 🟡 | `MetricsHandler` interface (counter/gauge/timer) + worker task counters; not the full Go metric set |
 | Tracing / OpenTelemetry | ❌ | |
 | Structured logging | ✅ | pluggable `log::Logger` |
 | Test framework (time-skip, replayer) | 🟡 | replayer ✅ (`Worker::ReplayWorkflowHistory`); time-skip ❌ |

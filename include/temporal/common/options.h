@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -97,6 +98,23 @@ enum class WorkflowPanicPolicy : unsigned char {
   FailWorkflow,
 };
 
+// Sink for worker metrics. Implement to forward to a backend (Prometheus, StatsD,
+// OpenTelemetry, …) and set it on WorkerOptions::metrics_handler.
+class MetricsHandler {
+ public:
+  MetricsHandler() = default;
+  virtual ~MetricsHandler() = default;
+  MetricsHandler(const MetricsHandler&) = delete;
+  MetricsHandler& operator=(const MetricsHandler&) = delete;
+  MetricsHandler(MetricsHandler&&) = delete;
+  MetricsHandler& operator=(MetricsHandler&&) = delete;
+
+  using Tags = std::map<std::string, std::string>;
+  virtual void Counter(const std::string& name, std::int64_t value, const Tags& tags) = 0;
+  virtual void Gauge(const std::string& name, double value, const Tags& tags) = 0;
+  virtual void Timer(const std::string& name, std::chrono::nanoseconds value, const Tags& tags) = 0;
+};
+
 // Options for a Worker.
 struct WorkerOptions {
   int max_concurrent_activities = 0;      // 0 => library default
@@ -107,6 +125,8 @@ struct WorkerOptions {
   // Max resident (sticky-cached) workflows; 0 => unbounded. Beyond this, the
   // least-recently-used workflow is evicted (its next task triggers a replay).
   int max_cached_workflows = 0;
+  // Optional metrics sink; nullptr disables metric emission.
+  std::shared_ptr<MetricsHandler> metrics_handler;
 };
 
 // Options for `Client::CreateSchedule`. The schedule runs the given workflow on a

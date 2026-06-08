@@ -1141,6 +1141,41 @@ TEST_F(IntegrationTest, HeaderContextPropagation) {
   worker.Stop();
 }
 
+// Tallies the worker's task counters via the MetricsHandler interface.
+class CountingMetrics : public temporal::MetricsHandler {
+ public:
+  void Counter(const std::string& name, std::int64_t value, const Tags&) override {
+    if (name == "temporal_workflow_task_handled") {
+      wf += value;
+    } else if (name == "temporal_activity_task_handled") {
+      act += value;
+    }
+  }
+  void Gauge(const std::string&, double, const Tags&) override {}
+  void Timer(const std::string&, std::chrono::nanoseconds, const Tags&) override {}
+  std::atomic<std::int64_t> wf{0};
+  std::atomic<std::int64_t> act{0};
+};
+
+// A worker emits task counters to a configured MetricsHandler.
+TEST_F(IntegrationTest, MetricsHandlerReceivesCounters) {
+  const auto tq = UniqueTaskQueue("metrics");
+  auto metrics = std::make_shared<CountingMetrics>();
+  temporal::WorkerOptions wo;
+  wo.metrics_handler = metrics;
+  temporal::worker::Worker worker(*client_, tq, wo);
+  worker.RegisterWorkflow("EchoWorkflow", EchoWorkflow);
+  worker.RegisterActivity("Echo", EchoActivity);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "EchoWorkflow", std::string("hi"));
+  EXPECT_EQ(handle.Result<std::string>(), "hi");
+  EXPECT_GT(metrics->wf.load(), 0);   // at least one workflow task handled
+  EXPECT_GT(metrics->act.load(), 0);  // at least one activity task handled
+  worker.Stop();
+}
+
 // A workflow upserts an indexed search attribute, which a visibility query finds.
 TEST_F(IntegrationTest, WorkflowUpsertsSearchAttribute) {
   std::system("temporal operator search-attribute create --name ItestKeyword --type Keyword "
