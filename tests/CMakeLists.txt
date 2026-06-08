@@ -33,5 +33,8 @@ if(INTEGRATION_SOURCES)
   add_executable(temporal_integration_tests ${INTEGRATION_SOURCES})
   target_link_libraries(temporal_integration_tests PRIVATE temporal::sdk GTest::gtest_main)
   add_test(NAME temporal_integration_tests COMMAND temporal_integration_tests)
-  set_tests_properties(temporal_integration_tests PROPERTIES TIMEOUT 180 LABELS integration)
+  # The suite runs end-to-end against a real server (each test is several seconds
+  # of real workflow round-trips); it grows as features land, so keep a generous
+  # ceiling well above the ~200s+ wall time on slower CI runners.
+  set_tests_properties(temporal_integration_tests PROPERTIES TIMEOUT 600 LABELS integration)
 endif()
