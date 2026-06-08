@@ -1,0 +1,10 @@
+{
+  "version.label": {
+    "message": "Текущая",
+    "description": "The label for version current"
+  },
+  "sidebar.docs.category.Writing workflows": {
+    "message": "Написание воркфлоу",
+    "description": "The label for category 'Writing workflows' in sidebar 'docs'"
+  }
+}

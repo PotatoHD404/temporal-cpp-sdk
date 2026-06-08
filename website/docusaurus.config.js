@@ -23,7 +23,14 @@ const config = {
   onBrokenLinks: 'warn',
   markdown: {hooks: {onBrokenMarkdownLinks: 'warn'}},
 
-  i18n: {defaultLocale: 'en', locales: ['en']},
+  i18n: {
+    defaultLocale: 'en',
+    locales: ['en', 'ru'],
+    localeConfigs: {
+      en: {label: 'English'},
+      ru: {label: 'Русский'},
+    },
+  },
 
   presets: [
     [
@@ -50,6 +57,7 @@ const config = {
         items: [
           {type: 'docSidebar', sidebarId: 'docs', position: 'left', label: 'Docs'},
           {to: '/parity', label: 'Parity', position: 'left'},
+          {type: 'localeDropdown', position: 'right'},
           {href: `https://github.com/${ghUser}/${repo}`, label: 'GitHub', position: 'right'},
         ],
       },

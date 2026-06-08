@@ -1,0 +1,18 @@
+{
+  "title": {
+    "message": "temporal-cpp",
+    "description": "The title in the navbar"
+  },
+  "item.label.Docs": {
+    "message": "Документация",
+    "description": "Navbar item with label Docs"
+  },
+  "item.label.Parity": {
+    "message": "Паритет",
+    "description": "Navbar item with label Parity"
+  },
+  "item.label.GitHub": {
+    "message": "GitHub",
+    "description": "Navbar item with label GitHub"
+  }
+}
