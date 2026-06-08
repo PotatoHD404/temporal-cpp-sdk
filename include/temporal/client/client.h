@@ -1,11 +1,13 @@
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include <temporal/common/options.h>
 #include <temporal/common/payload.h>
@@ -19,10 +21,12 @@ class GrpcClient;
 
 namespace client {
 
-// A snapshot of a workflow execution, returned by WorkflowHandle::Describe.
+// A snapshot of a workflow execution, returned by WorkflowHandle::Describe and
+// Client::ListWorkflows.
 struct WorkflowDescription {
   std::string workflow_id;
   std::string run_id;
+  std::string workflow_type;
   std::string status;  // e.g. "Running", "Completed", "Failed", "Terminated"
   std::map<std::string, Payload> memo;
 };
@@ -122,6 +126,12 @@ class Client {
   }
 
   WorkflowHandle GetHandle(std::string workflow_id, std::string run_id = "");
+
+  // Visibility queries. `query` is a Temporal list filter (e.g.
+  // "WorkflowType = 'Foo' AND ExecutionStatus = 'Running'"); empty matches all.
+  // ListWorkflows pages through every match internally.
+  std::vector<WorkflowDescription> ListWorkflows(const std::string& query = "");
+  std::int64_t CountWorkflows(const std::string& query = "");
 
   // Create a schedule that starts a workflow on a fixed interval. (Minimal
   // surface: interval + start-workflow action — see ScheduleOptions.)

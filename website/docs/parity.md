@@ -28,7 +28,7 @@ cache. This page is the honest accounting.
 | Cancel / Terminate | ✅ | |
 | Get handle to existing run | ✅ | |
 | Signal-with-start | ✅ | `Client::SignalWithStartWorkflow` |
-| List / count / describe workflows | 🟡 | `Describe` ✅ (status + memo); list/count ❌ |
+| List / count / describe workflows | ✅ | `Describe`, `ListWorkflows`, `CountWorkflows` (visibility query) |
 | Reset / batch operations | ❌ | |
 | Schedules client | 🟡 | create / describe / delete (interval + start-workflow); update/list/trigger/pause ❌ |
 | Operator & Cloud services | ❌ | |

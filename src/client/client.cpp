@@ -22,6 +22,35 @@
 namespace temporal::client {
 
 namespace enums = ::temporal::api::enums::v1;
+namespace wf = ::temporal::api::workflow::v1;
+
+namespace {
+
+// Strips the verbose "WORKFLOW_EXECUTION_STATUS_" prefix off the proto enum name,
+// e.g. WORKFLOW_EXECUTION_STATUS_RUNNING -> "Running".
+std::string StatusName(enums::WorkflowExecutionStatus status) {
+  std::string name = enums::WorkflowExecutionStatus_Name(status);
+  const std::string prefix = "WORKFLOW_EXECUTION_STATUS_";
+  if (name.starts_with(prefix)) {
+    name = name.substr(prefix.size());
+  }
+  return name;
+}
+
+// Builds a WorkflowDescription from a visibility/describe WorkflowExecutionInfo.
+WorkflowDescription DescriptionFromInfo(const wf::WorkflowExecutionInfo& info) {
+  WorkflowDescription out;
+  out.workflow_id = info.execution().workflow_id();
+  out.run_id = info.execution().run_id();
+  out.workflow_type = info.type().name();
+  out.status = StatusName(info.status());
+  for (const auto& [key, value] : info.memo().fields()) {
+    out.memo[key] = internal::FromProtoPayload(value);
+  }
+  return out;
+}
+
+}  // namespace
 
 WorkflowHandle::WorkflowHandle(std::shared_ptr<internal::GrpcClient> grpc,
                                std::shared_ptr<DataConverter> converter, std::string ns,
@@ -68,20 +97,7 @@ WorkflowDescription WorkflowHandle::Describe() {
     req.mutable_execution()->set_run_id(run_id_);
   }
   const auto resp = grpc_->DescribeWorkflowExecution(req);
-  const auto& info = resp.workflow_execution_info();
-  WorkflowDescription out;
-  out.workflow_id = info.execution().workflow_id();
-  out.run_id = info.execution().run_id();
-  std::string status = ::temporal::api::enums::v1::WorkflowExecutionStatus_Name(info.status());
-  const std::string prefix = "WORKFLOW_EXECUTION_STATUS_";
-  if (status.starts_with(prefix)) {
-    status = status.substr(prefix.size());
-  }
-  out.status = std::move(status);
-  for (const auto& [key, value] : info.memo().fields()) {
-    out.memo[key] = internal::FromProtoPayload(value);
-  }
-  return out;
+  return DescriptionFromInfo(resp.workflow_execution_info());
 }
 
 Payloads WorkflowHandle::ResultPayloads() {
@@ -212,6 +228,39 @@ Client Client::Connect(const ClientOptions& options) {
 
 WorkflowHandle Client::GetHandle(std::string workflow_id, std::string run_id) {
   return {grpc_, converter_, ns_, std::move(workflow_id), std::move(run_id)};
+}
+
+std::vector<WorkflowDescription> Client::ListWorkflows(const std::string& query) {
+  std::vector<WorkflowDescription> out;
+  std::string page_token;
+  for (;;) {
+    internal::wsv::ListWorkflowExecutionsRequest req;
+    req.set_namespace_(ns_);
+    if (!query.empty()) {
+      req.set_query(query);
+    }
+    if (!page_token.empty()) {
+      req.set_next_page_token(page_token);
+    }
+    const auto resp = grpc_->ListWorkflowExecutions(req);
+    for (const auto& info : resp.executions()) {
+      out.push_back(DescriptionFromInfo(info));
+    }
+    page_token = resp.next_page_token();
+    if (page_token.empty()) {
+      break;
+    }
+  }
+  return out;
+}
+
+std::int64_t Client::CountWorkflows(const std::string& query) {
+  internal::wsv::CountWorkflowExecutionsRequest req;
+  req.set_namespace_(ns_);
+  if (!query.empty()) {
+    req.set_query(query);
+  }
+  return grpc_->CountWorkflowExecutions(req).count();
 }
 
 WorkflowHandle Client::StartWorkflowPayloads(const StartWorkflowOptions& options,

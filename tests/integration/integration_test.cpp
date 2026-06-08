@@ -881,4 +881,37 @@ TEST_F(IntegrationTest, ScheduleCreateDescribeDelete) {
   EXPECT_NO_THROW(client_->DeleteSchedule(schedule_id));
 }
 
+// ListWorkflows + CountWorkflows query the visibility store. Two runs of a
+// unique workflow type are started; a WorkflowType filter then finds exactly
+// those two (visibility is eventually consistent, so we poll briefly).
+TEST_F(IntegrationTest, ListAndCountWorkflows) {
+  const auto tq = UniqueTaskQueue("list");
+  const std::string wf_type = "ListCountWf" + std::to_string(g_seq.fetch_add(1));
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow(wf_type, SleepWorkflow);
+  worker.Start();
+
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h1 = client_->StartWorkflow(o, wf_type, 0);
+  auto h2 = client_->StartWorkflow(o, wf_type, 0);
+  EXPECT_EQ(h1.Result<std::string>(), "slept");
+  EXPECT_EQ(h2.Result<std::string>(), "slept");
+
+  const std::string query = "WorkflowType = '" + wf_type + "'";
+  std::vector<temporal::client::WorkflowDescription> listed;
+  for (int i = 0; i < 40; ++i) {  // wait for the visibility index to catch up
+    listed = client_->ListWorkflows(query);
+    if (listed.size() == 2) {
+      break;
+    }
+    std::this_thread::sleep_for(250ms);
+  }
+  ASSERT_EQ(listed.size(), 2U);
+  EXPECT_EQ(listed[0].workflow_type, wf_type);
+  EXPECT_FALSE(listed[0].run_id.empty());
+  EXPECT_EQ(client_->CountWorkflows(query), 2);
+  worker.Stop();
+}
+
 }  // namespace

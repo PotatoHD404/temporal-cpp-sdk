@@ -59,6 +59,24 @@ wsv::DescribeWorkflowExecutionResponse GrpcClient::DescribeWorkflowExecution(
       });
 }
 
+wsv::ListWorkflowExecutionsResponse GrpcClient::ListWorkflowExecutions(
+    const wsv::ListWorkflowExecutionsRequest& req) {
+  return UnaryCall<wsv::ListWorkflowExecutionsResponse>(
+      "ListWorkflowExecutions", false,
+      [&](grpc::ClientContext* c, wsv::ListWorkflowExecutionsResponse* p) {
+        return stub_->ListWorkflowExecutions(c, req, p);
+      });
+}
+
+wsv::CountWorkflowExecutionsResponse GrpcClient::CountWorkflowExecutions(
+    const wsv::CountWorkflowExecutionsRequest& req) {
+  return UnaryCall<wsv::CountWorkflowExecutionsResponse>(
+      "CountWorkflowExecutions", false,
+      [&](grpc::ClientContext* c, wsv::CountWorkflowExecutionsResponse* p) {
+        return stub_->CountWorkflowExecutions(c, req, p);
+      });
+}
+
 wsv::SignalWithStartWorkflowExecutionResponse GrpcClient::SignalWithStartWorkflowExecution(
     const wsv::SignalWithStartWorkflowExecutionRequest& req) {
   return UnaryCall<wsv::SignalWithStartWorkflowExecutionResponse>(
