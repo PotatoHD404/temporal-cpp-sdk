@@ -513,6 +513,17 @@ class WorkflowRunner final : public WorkflowOutbound {
     return true;
   }
 
+  bool HasSignal(std::string_view name) const override {
+    const std::string key(name);
+    const auto sit = scan_.signals.find(key);
+    if (sit == scan_.signals.end()) {
+      return false;
+    }
+    const auto cit = signal_cursor_.find(key);
+    const std::size_t cursor = cit == signal_cursor_.end() ? 0 : cit->second;
+    return cursor < sit->second.size();
+  }
+
   bool IsCancelRequested() const override { return scan_.cancel_requested; }
 
   std::shared_ptr<FutureState> AwaitCancellation() override {

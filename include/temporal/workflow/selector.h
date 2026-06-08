@@ -5,15 +5,17 @@
 #include <vector>
 
 #include <temporal/internal/workflow_outbound.h>
+#include <temporal/workflow/channel.h>
 #include <temporal/workflow/context.h>
 #include <temporal/workflow/future.h>
 
 namespace temporal::workflow {
 
-// Waits on multiple futures, proceeding when any one is ready — the C++ analogue
-// of the Go SDK's `workflow.Selector`. The canonical use is "activity OR timeout".
-// `Select()` runs the matching case's handler; add a default to make it
-// non-blocking. (Only futures are supported for now; channel cases are roadmap.)
+// Waits on multiple cases, proceeding when any one is ready — the C++ analogue of
+// the Go SDK's `workflow.Selector`. Cases can be futures (activities, timers,
+// child workflows) or signal-channel receives; the canonical use is
+// "activity OR timeout" or "signal OR timeout". `Select()` runs the matching
+// case's handler; add a default to make it non-blocking.
 class Selector {
  public:
   explicit Selector(Context& ctx) : env_(ctx.env_) {}
@@ -33,6 +35,17 @@ class Selector {
                           [future, handler = std::move(handler)]() mutable {
                             future.Get();
                             handler();
+                          }});
+    return *this;
+  }
+
+  // Add a signal-channel receive case: ready when a signal is buffered on the
+  // channel; when chosen, consumes it and passes the value to the handler.
+  template <class T>
+  Selector& AddReceive(ReceiveChannel<T> channel, std::function<void(T)> handler) {
+    cases_.push_back(Case{[channel]() { return channel.HasPending(); },
+                          [channel, handler = std::move(handler)]() mutable {
+                            handler(channel.Receive());
                           }});
     return *this;
   }

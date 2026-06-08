@@ -105,6 +105,10 @@ class FakeEnv : public internal::WorkflowOutbound {
     return true;
   }
 
+  bool HasSignal(std::string_view name) const override {
+    return std::string(name) == signal_name && signal_cursor < signal_queue.size();
+  }
+
   bool IsCancelRequested() const override { return cancel_requested; }
 
   std::shared_ptr<internal::FutureState> AwaitCancellation() override {

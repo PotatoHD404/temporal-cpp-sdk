@@ -90,6 +90,10 @@ class WorkflowOutbound {
   // deterministic per-name cursor; returns false if none remain this run.
   virtual bool TryConsumeSignal(std::string_view name, Payloads& out) = 0;
 
+  // Whether a buffered signal for `name` is available to consume (a non-consuming
+  // peek), so a Selector can offer a signal-channel receive case.
+  virtual bool HasSignal(std::string_view name) const = 0;
+
   // Whether a cancel has been requested for this workflow execution.
   virtual bool IsCancelRequested() const = 0;
 

@@ -240,6 +240,19 @@ std::string ActivityCancelWorkflow(temporal::workflow::Context& ctx) {
   return act.Get();  // the activity's result ("cancelled" after it observes the request)
 }
 
+// Selects between a "go" signal and a timeout timer ("signal OR timeout"),
+// exercising a Selector signal-channel receive case.
+std::string SignalSelectorWorkflow(temporal::workflow::Context& ctx) {
+  auto signals = ctx.GetSignalChannel<std::string>("go");
+  auto timeout = ctx.NewTimer(30s);
+  std::string out;
+  temporal::workflow::Selector sel(ctx);
+  sel.AddReceive<std::string>(signals, [&](std::string s) { out = "signal:" + s; });
+  sel.AddFuture(timeout, [&]() { out = "timeout"; });
+  sel.Select();
+  return out;
+}
+
 // Runs longer than its heartbeat timeout but heartbeats to stay alive.
 std::string HeartbeatActivity(temporal::activity::Context& ctx, int) {
   for (int i = 0; i < 5; ++i) {
@@ -834,6 +847,23 @@ TEST_F(IntegrationTest, ActivityCancellationViaWorkflowCancel) {
   std::this_thread::sleep_for(3s);  // let the activity start and heartbeat
   handle.Cancel();                  // workflow cancel -> the workflow cancels its activity
   EXPECT_EQ(handle.Result<std::string>(), "cancelled");  // activity observed it and returned
+  worker.Stop();
+}
+
+// A Selector can wait on a signal channel: the signal arrives before the 30s
+// timeout, so the channel case wins.
+TEST_F(IntegrationTest, SelectorPicksSignalOverTimeout) {
+  const auto tq = UniqueTaskQueue("select-signal");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("SignalSelectorWorkflow", SignalSelectorWorkflow);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "SignalSelectorWorkflow");
+  const auto dc = temporal::DataConverter::Default();
+  std::this_thread::sleep_for(2s);  // let the workflow park on the selector
+  handle.Signal("go", dc->ToPayloads(std::string("hi")));
+  EXPECT_EQ(handle.Result<std::string>(), "signal:hi");  // the channel case won
   worker.Stop();
 }
 

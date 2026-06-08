@@ -57,7 +57,9 @@ priority/dependency.
   own cancel via `ctx.AwaitCancellation()` (a Selector case); **activity cancellation** via
   `Future::Cancel()` → `RequestCancelActivityTask`, observed activity-side through
   `activity::Context::IsCancelled()` (heartbeat). Remaining: child-workflow cancellation +
-  parent-close-policy. Plus selector **channel cases** (the current `Selector` supports future cases).
+  parent-close-policy.
+- **Selector channel cases** ✅ — `Selector::AddReceive` waits on a signal channel ("signal OR
+  timeout"); a non-consuming `HasSignal` peek backs the ready check.
 - **SideEffect** ✅ + **`GetVersion`** versioning ✅ — marker record/replay (RecordMarker command;
   SideEffect keyed by call order, Version by change id). MutableSideEffect remaining.
 - **Local activities**.

@@ -37,6 +37,10 @@ class ReceiveChannel {
     return true;
   }
 
+  // Whether a buffered signal is available to Receive() without blocking. Used by
+  // Selector channel cases.
+  bool HasPending() const { return env_->HasSignal(name_); }
+
  private:
   T Decode(const Payloads& payloads) const {
     return payloads.empty() ? T{} : converter_->template FromPayload<T>(payloads.at(0));

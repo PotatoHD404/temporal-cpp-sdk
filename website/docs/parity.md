@@ -56,7 +56,7 @@ cache. This page is the honest accounting.
 | Queries (`SetQueryHandler`) | ✅ | live-state, read-only |
 | Updates (`SetUpdateHandler`) | ✅ | accept + complete on the live path |
 | Update validators | ✅ | read-only validator; rejection is ephemeral (no history entry) |
-| Selectors | 🟡 | future cases; no channel cases yet |
+| Selectors | ✅ | future cases + signal-channel receive cases (`AddReceive`) |
 | Child workflows | ✅ | basic; no parent-close-policy / cancel / signal-child |
 | Continue-as-new | ✅ | |
 | Observe cancellation (`IsCancelled`) | ✅ | |
@@ -121,9 +121,9 @@ Rough priority order (see the repo's `docs/ROADMAP.md` for detail):
 1. **Determinism hardening** — ✅ non-determinism detection + bounded sticky-cache LRU
    (`max_cached_workflows`) + heartbeat cancel-detection (`activity::Context::IsCancelled`);
    remaining: history pagination, heartbeat throttling.
-2. **Workflow feature surface** — ✅ `SideEffect` + `GetVersion` + update validators + timer
-   cancellation (`Future::Cancel`); remaining: activity/child cancel + propagation, selector channel
-   cases, MutableSideEffect, local activities.
+2. **Workflow feature surface** — ✅ `SideEffect` + `GetVersion` + update validators + cancellation
+   (timer, activity, `AwaitCancellation`) + selector channel cases; remaining: child-workflow cancel,
+   MutableSideEffect, local activities.
 3. **Production concerns** — TLS/mTLS + API-key auth, interceptors, metrics & tracing,
    proto/protoJSON converters + payload codecs, worker tuning.
 4. **Breadth** — ✅ replay/test framework (`Worker::ReplayWorkflowHistory` +
