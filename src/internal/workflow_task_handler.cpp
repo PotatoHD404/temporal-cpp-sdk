@@ -15,6 +15,7 @@
 #include "temporal/api/enums/v1/event_type.pb.h"
 #include "temporal/api/history/v1/message.pb.h"
 
+#include "internal/coroutine.h"
 #include "internal/grpc_client.h"
 #include "internal/proto_util.h"
 
@@ -124,17 +125,49 @@ Prescan ScanHistory(const hist::History& history) {
   return ps;
 }
 
-// The WorkflowOutbound the running workflow talks to. Activity/timer ids are
-// assigned deterministically by call order, so the same call on a later replay
-// maps to the same history event.
+// The WorkflowOutbound the running workflow talks to. The workflow body runs on a
+// stackful coroutine; awaiting an unresolved future/signal yields the coroutine
+// (preserving the workflow's full state) rather than unwinding it, which is what
+// lets queries and selectors observe live state. Activity/timer ids are assigned
+// deterministically by call order so a later replay lines up with history.
 class WorkflowRunner final : public WorkflowOutbound {
  public:
-  WorkflowRunner(workflow::WorkflowInfo info, std::shared_ptr<log::Logger> logger,
-                 bool is_replaying, Prescan scan)
+  enum class Status { Blocked, Completed, Failed };
+
+  WorkflowRunner(workflow::WorkflowInfo info, std::shared_ptr<log::Logger> logger, bool is_replaying,
+                 Prescan scan, const DataConverter* converter, worker::WorkflowFn workflow_fn,
+                 Payloads input)
       : info_(std::move(info)),
         logger_(std::move(logger)),
         is_replaying_(is_replaying),
-        scan_(std::move(scan)) {}
+        scan_(std::move(scan)),
+        converter_(converter),
+        workflow_fn_(std::move(workflow_fn)),
+        input_(std::move(input)) {}
+
+  // Run the workflow until it blocks or finishes. Prescan resolves every
+  // history-known future up front, so a single resume reaches the current block.
+  void Run() {
+    if (!coroutine_) {
+      coroutine_ = std::make_unique<Coroutine>([this] { RunBody(); });
+    }
+    coroutine_->Resume();
+  }
+
+  bool Completed() const { return status_ == Status::Completed; }
+  bool Failed() const { return status_ == Status::Failed; }
+  bool IsDone() const { return coroutine_ && coroutine_->Done(); }
+  const Payloads& result() const { return result_; }
+  const tapi::failure::v1::Failure& failure() const { return failure_; }
+
+  // Invoke a registered query handler against the live (suspended) workflow state.
+  Payloads RunQuery(const std::string& name, const Payloads& args) {
+    const auto it = query_handlers_.find(name);
+    if (it == query_handlers_.end()) {
+      throw ApplicationError("unknown query type: " + name, "QueryNotRegistered");
+    }
+    return it->second(args);
+  }
 
   std::shared_ptr<FutureState> ScheduleActivity(std::string_view activity_type,
                                                 const Payloads& input,
@@ -171,10 +204,12 @@ class WorkflowRunner final : public WorkflowOutbound {
   }
 
   void Block(const std::shared_ptr<FutureState>& state) override {
-    if (!state->ready) {
-      throw WorkflowBlocked{};
+    while (!state->ready) {
+      coroutine_->Yield();
     }
   }
+
+  void Park() override { coroutine_->Yield(); }
 
   bool TryConsumeSignal(std::string_view name, Payloads& out) override {
     const std::string key(name);
@@ -193,6 +228,10 @@ class WorkflowRunner final : public WorkflowOutbound {
 
   bool IsCancelRequested() const override { return scan_.cancel_requested; }
 
+  void RegisterQueryHandler(std::string name, QueryFn handler) override {
+    query_handlers_.insert_or_assign(std::move(name), std::move(handler));
+  }
+
   const workflow::WorkflowInfo& Info() const override { return info_; }
   log::Logger& Logger() const override { return *logger_; }
   bool IsReplaying() const override { return is_replaying_; }
@@ -200,6 +239,22 @@ class WorkflowRunner final : public WorkflowOutbound {
   const std::vector<cmd::Command>& commands() const { return commands_; }
 
  private:
+  // Runs on the coroutine thread: executes the workflow function to its next
+  // suspension point (or completion), capturing the result or failure.
+  void RunBody() {
+    workflow::Context ctx(this, converter_);
+    try {
+      result_ = workflow_fn_(ctx, input_);
+      status_ = Status::Completed;
+    } catch (const ApplicationError& e) {
+      failure_ = MakeApplicationFailure(e.what(), e.type());
+      status_ = Status::Failed;
+    } catch (const std::exception& e) {
+      failure_ = MakeApplicationFailure(e.what(), "std::exception");
+      status_ = Status::Failed;
+    }
+  }
+
   void EmitScheduleActivity(const std::string& id, std::string_view activity_type,
                             const Payloads& input, const ActivityOptions& options) {
     cmd::Command c;
@@ -245,10 +300,18 @@ class WorkflowRunner final : public WorkflowOutbound {
   std::shared_ptr<log::Logger> logger_;
   bool is_replaying_;
   Prescan scan_;
+  const DataConverter* converter_;
+  worker::WorkflowFn workflow_fn_;
+  Payloads input_;
   std::unordered_map<std::string, std::size_t> signal_cursor_;
+  std::unordered_map<std::string, QueryFn> query_handlers_;
   std::vector<cmd::Command> commands_;
+  Status status_ = Status::Blocked;
+  Payloads result_;
+  tapi::failure::v1::Failure failure_;
   int activity_seq_ = 0;
   int timer_seq_ = 0;
+  std::unique_ptr<Coroutine> coroutine_;  // declared last -> destroyed first (tears down thread)
 };
 
 }  // namespace
@@ -285,27 +348,11 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
   }
 
   Prescan scan = ScanHistory(task.history());
-  const Payloads input = scan.input;
+  Payloads input = scan.input;
   const bool is_replaying = task.previous_started_event_id() > 0;
-  WorkflowRunner runner(info, logger_, is_replaying, std::move(scan));
-  workflow::Context ctx(&runner, converter_.get());
-
-  enum class Term { kBlocked, kCompleted, kFailed };
-  Term term = Term::kBlocked;
-  Payloads result;
-  tapi::failure::v1::Failure failure;
-  try {
-    result = wf->second(ctx, input);
-    term = Term::kCompleted;
-  } catch (const WorkflowBlocked&) {
-    term = Term::kBlocked;
-  } catch (const ApplicationError& e) {
-    term = Term::kFailed;
-    failure = MakeApplicationFailure(e.what(), e.type());
-  } catch (const std::exception& e) {
-    term = Term::kFailed;
-    failure = MakeApplicationFailure(e.what(), "std::exception");
-  }
+  WorkflowRunner runner(info, logger_, is_replaying, std::move(scan), converter_.get(), wf->second,
+                        std::move(input));
+  runner.Run();
 
   wsv::RespondWorkflowTaskCompletedRequest req;
   req.set_task_token(task.task_token());
@@ -313,17 +360,17 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
   for (const auto& c : runner.commands()) {
     *req.add_commands() = c;
   }
-  if (term == Term::kCompleted) {
+  if (runner.Completed()) {
     auto* c = req.add_commands();
     c->set_command_type(enums::COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION);
     auto* attr = c->mutable_complete_workflow_execution_command_attributes();
-    if (!result.empty()) {
-      *attr->mutable_result() = ToProtoPayloads(result);
+    if (!runner.result().empty()) {
+      *attr->mutable_result() = ToProtoPayloads(runner.result());
     }
-  } else if (term == Term::kFailed) {
+  } else if (runner.Failed()) {
     auto* c = req.add_commands();
     c->set_command_type(enums::COMMAND_TYPE_FAIL_WORKFLOW_EXECUTION);
-    *c->mutable_fail_workflow_execution_command_attributes()->mutable_failure() = failure;
+    *c->mutable_fail_workflow_execution_command_attributes()->mutable_failure() = runner.failure();
   }
   grpc_->RespondWorkflowTaskCompleted(req);
 }

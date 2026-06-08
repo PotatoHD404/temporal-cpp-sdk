@@ -9,6 +9,8 @@ FetchContent_MakeAvailable(googletest)
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cpp")
 add_executable(temporal_tests ${TEST_SOURCES})
 target_link_libraries(temporal_tests PRIVATE temporal::sdk GTest::gtest_main)
+# Unit tests may reach internal engine headers (e.g. the coroutine primitive).
+target_include_directories(temporal_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 # Register the whole suite as one ctest entry. We deliberately avoid
 # gtest_discover_tests' build-time enumeration: the binary statically links the

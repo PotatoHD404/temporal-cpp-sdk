@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -32,11 +33,9 @@ struct FutureState {
   std::string failure_message;
 };
 
-// Thrown to suspend ("park") a workflow that awaits an unresolved future.
-// Deliberately NOT derived from std::exception so a stray `catch (const
-// std::exception&)` in user workflow code cannot swallow it. The workflow task
-// handler catches it to finalize the current task. See docs/ARCHITECTURE.md.
-struct WorkflowBlocked {};
+// A registered query handler, already adapted to operate on payloads (the
+// Context wraps the user's typed handler into this shape).
+using QueryFn = std::function<Payloads(const Payloads& args)>;
 
 // Outbound surface a running workflow uses to emit commands and block. The
 // handler implements it; methods are non-templated to keep proto out of headers.
@@ -55,8 +54,13 @@ class WorkflowOutbound {
 
   virtual std::shared_ptr<FutureState> StartTimer(std::chrono::nanoseconds duration) = 0;
 
-  // Returns if `state` is ready; otherwise throws WorkflowBlocked to suspend.
+  // Suspend the workflow until `state` is ready (cooperatively yields the
+  // dispatcher coroutine; returns once ready, or unwinds on teardown).
   virtual void Block(const std::shared_ptr<FutureState>& state) = 0;
+
+  // Suspend the workflow unconditionally until the next event/task (used by
+  // signal channels and selectors when nothing is ready).
+  virtual void Park() = 0;
 
   // Consume the next buffered signal for `name` into `out`, advancing a
   // deterministic per-name cursor; returns false if none remain this run.
@@ -64,6 +68,10 @@ class WorkflowOutbound {
 
   // Whether a cancel has been requested for this workflow execution.
   virtual bool IsCancelRequested() const = 0;
+
+  // Register a query handler (re-registered on every replay). Invoked against
+  // the live, suspended workflow state when a query task arrives.
+  virtual void RegisterQueryHandler(std::string name, QueryFn handler) = 0;
 
   virtual const workflow::WorkflowInfo& Info() const = 0;
   virtual log::Logger& Logger() const = 0;

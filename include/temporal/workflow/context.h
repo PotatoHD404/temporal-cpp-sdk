@@ -3,9 +3,13 @@
 #include <chrono>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <type_traits>
+#include <utility>
 
 #include <temporal/common/options.h>
 #include <temporal/converter/data_converter.h>
+#include <temporal/internal/callable_traits.h>
 #include <temporal/internal/workflow_outbound.h>
 #include <temporal/log/logger.h>
 #include <temporal/workflow/channel.h>
@@ -58,6 +62,16 @@ class Context {
   // workflow decides how to react (finish, clean up, etc.).
   bool IsCancelled() const { return env_->IsCancelRequested(); }
 
+  // Register a query handler `R Fn(Args...)`, à la `workflow.SetQueryHandler`.
+  // Handlers must be read-only (no activities/timers): they run against live
+  // workflow state when a query arrives. Re-registering replaces the handler.
+  template <class Fn>
+  void SetQueryHandler(std::string name, Fn handler) {
+    using Sig = internal::fn_sig<std::decay_t<Fn>>;
+    env_->RegisterQueryHandler(
+        std::move(name), MakeQueryFn<typename Sig::ret, typename Sig::args>(std::move(handler)));
+  }
+
   const WorkflowInfo& GetInfo() const { return env_->Info(); }
   log::Logger& GetLogger() const { return env_->Logger(); }
   bool IsReplaying() const { return env_->IsReplaying(); }
@@ -66,6 +80,22 @@ class Context {
   const DataConverter& data_converter() const { return *converter_; }
 
  private:
+  template <class Ret, class Args, class Fn>
+  internal::QueryFn MakeQueryFn(Fn handler) {
+    const DataConverter* converter = converter_;
+    return [handler = std::move(handler), converter](const Payloads& in) -> Payloads {
+      auto args = internal::DecodeArgs<Args>(*converter, in,
+                                             std::make_index_sequence<std::tuple_size_v<Args>>{});
+      if constexpr (std::is_void_v<Ret>) {
+        std::apply([&](auto&... a) { handler(a...); }, args);
+        return Payloads{};
+      } else {
+        Ret result = std::apply([&](auto&... a) { return handler(a...); }, args);
+        return Payloads{converter->ToPayload(result)};
+      }
+    };
+  }
+
   internal::WorkflowOutbound* env_;
   const DataConverter* converter_;
 };

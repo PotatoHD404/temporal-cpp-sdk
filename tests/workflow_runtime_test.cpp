@@ -15,9 +15,12 @@ namespace {
 
 using namespace temporal;
 
+// Sentinel the fake throws where the real coroutine engine would yield.
+struct FakeSuspend {};
+
 // A fake WorkflowOutbound that lets tests preset whether scheduled operations are
 // already resolved, exercising the Future/Context determinism seam without a
-// server.
+// server or coroutine.
 class FakeEnv : public internal::WorkflowOutbound {
  public:
   std::shared_ptr<internal::FutureState> ScheduleActivity(std::string_view, const Payloads&,
@@ -38,9 +41,13 @@ class FakeEnv : public internal::WorkflowOutbound {
 
   void Block(const std::shared_ptr<internal::FutureState>& st) override {
     if (!st->ready) {
-      throw internal::WorkflowBlocked{};
+      throw FakeSuspend{};
     }
   }
+
+  void Park() override { throw FakeSuspend{}; }
+
+  void RegisterQueryHandler(std::string, internal::QueryFn) override {}
 
   bool TryConsumeSignal(std::string_view name, Payloads& out) override {
     if (std::string(name) != signal_name || signal_cursor >= signal_queue.size()) {
@@ -90,7 +97,7 @@ TEST(WorkflowRuntime, GetParksWorkflowWhenNotReady) {
   const ActivityOptions opts;
   auto future = ctx.ExecuteActivity<std::string>(opts, "ComposeGreeting", std::string("x"));
 
-  EXPECT_THROW(future.Get(), internal::WorkflowBlocked);
+  EXPECT_THROW(future.Get(), FakeSuspend);
 }
 
 TEST(WorkflowRuntime, FailedActivitySurfacesActivityError) {
@@ -126,7 +133,7 @@ TEST(WorkflowRuntime, SignalChannelParksWhenEmpty) {
 
   workflow::Context ctx(&env, dc.get());
   auto channel = ctx.GetSignalChannel<std::string>("greet");
-  EXPECT_THROW(channel.Receive(), internal::WorkflowBlocked);
+  EXPECT_THROW(channel.Receive(), FakeSuspend);
 
   std::string out;
   EXPECT_FALSE(channel.ReceiveAsync(out));

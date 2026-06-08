@@ -22,10 +22,10 @@ class ReceiveChannel {
 
   T Receive() {
     Payloads payloads;
-    if (env_->TryConsumeSignal(name_, payloads)) {
-      return Decode(payloads);
+    while (!env_->TryConsumeSignal(name_, payloads)) {
+      env_->Park();  // suspend until a signal/event arrives (or teardown)
     }
-    throw internal::WorkflowBlocked{};  // park until the next signal/event
+    return Decode(payloads);
   }
 
   bool ReceiveAsync(T& out) {
