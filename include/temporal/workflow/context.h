@@ -19,6 +19,10 @@ namespace temporal::workflow {
 
 class Selector;
 
+// Returned by Context::GetVersion when replaying history recorded before the
+// GetVersion call was added (mirrors the Go SDK's workflow.DefaultVersion).
+inline constexpr int kDefaultVersion = -1;
+
 // Immutable metadata about the currently executing workflow.
 struct WorkflowInfo {
   std::string workflow_id;
@@ -96,6 +100,31 @@ class Context {
     using Sig = internal::fn_sig<std::decay_t<Fn>>;
     env_->RegisterUpdateHandler(
         std::move(name), MakeQueryFn<typename Sig::ret, typename Sig::args>(std::move(handler)));
+  }
+
+  // Capture the result of a non-deterministic operation exactly once. The first
+  // time it runs, `fn` executes and its result is recorded to history; on every
+  // replay the recorded value is returned without running `fn` again. Mirrors
+  // the Go SDK's `workflow.SideEffect`. Use for ids, randomness, reading a clock
+  // — never for anything with externally-visible effects.
+  template <class R, class Fn>
+  R SideEffect(Fn fn) {
+    static_assert(!std::is_void_v<R>, "SideEffect's function must return a value");
+    if (const auto recorded = env_->ReplaySideEffect()) {
+      return converter_->FromPayload<R>(*recorded);
+    }
+    R value = fn();
+    env_->RecordSideEffect(converter_->ToPayload(value));
+    return value;
+  }
+
+  // Returns a version number for the named change, recorded the first time it
+  // runs so the workflow can branch on code changes safely across replays.
+  // Mirrors `workflow.GetVersion`; returns `kDefaultVersion` (-1) when replaying
+  // history recorded before this call existed. Pass `kDefaultVersion` as
+  // `min_supported` to keep supporting the un-versioned (pre-call) branch.
+  int GetVersion(const std::string& change_id, int min_supported, int max_supported) {
+    return env_->GetVersion(change_id, min_supported, max_supported);
   }
 
   const WorkflowInfo& GetInfo() const { return env_->Info(); }

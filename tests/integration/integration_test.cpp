@@ -196,6 +196,19 @@ int ReplayProbeWorkflow(temporal::workflow::Context& ctx) {
   return base + bump;
 }
 
+// SideEffect/GetVersion must resolve exactly once: recorded the first time, then
+// replayed. This global counts SideEffect function invocations across replays.
+std::atomic<int> g_side_effect_calls{0};
+
+// Records a Version marker and a SideEffect marker, then parks on a signal so a
+// worker restart forces a full replay of both markers.
+int MarkerWorkflow(temporal::workflow::Context& ctx) {
+  const int ver = ctx.GetVersion("v1", temporal::workflow::kDefaultVersion, 2);  // -> 2
+  const int v = ctx.SideEffect<int>([] { return 100 + g_side_effect_calls.fetch_add(1); });
+  ctx.GetSignalChannel<std::string>("go").Receive();  // park until after the restart
+  return v + (ver * 1000);
+}
+
 // ---- harness -------------------------------------------------------------
 std::atomic<int> g_seq{0};
 
@@ -519,6 +532,35 @@ TEST_F(IntegrationTest, FullReplayAfterWorkerRestartStaysDeterministic) {
   handle.Signal("bump", dc->ToPayloads(100));
   EXPECT_EQ(handle.Result<int>(), 142);  // 42 + 100: the full replay completed cleanly
   EXPECT_GE(worker_b.replays(), 1);      // prove B actually replayed from scratch
+  worker_b.Stop();
+}
+
+// SideEffect and GetVersion record a marker on first execution and replay it
+// verbatim afterwards. The side-effect function must run exactly once, even
+// across a from-scratch replay on a fresh worker.
+TEST_F(IntegrationTest, MarkersRecordOnceAndReplayAcrossRestart) {
+  g_side_effect_calls.store(0);
+  const auto tq = UniqueTaskQueue("markers");
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "MarkerWorkflow");
+  const auto dc = temporal::DataConverter::Default();
+
+  {
+    temporal::worker::Worker worker_a(*client_, tq);
+    worker_a.RegisterWorkflow("MarkerWorkflow", MarkerWorkflow);
+    worker_a.Start();
+    std::this_thread::sleep_for(6s);  // markers recorded; workflow parks on "go"
+    worker_a.Stop();
+  }
+  EXPECT_EQ(g_side_effect_calls.load(), 1);  // SideEffect's function ran once on worker A
+
+  temporal::worker::Worker worker_b(*client_, tq);
+  worker_b.RegisterWorkflow("MarkerWorkflow", MarkerWorkflow);
+  worker_b.Start();
+  handle.Signal("go", dc->ToPayloads(std::string("now")));
+  EXPECT_EQ(handle.Result<int>(), 2100);     // GetVersion->2 (x1000) + SideEffect->100
+  EXPECT_EQ(g_side_effect_calls.load(), 1);  // replay did NOT re-run the side-effect function
   worker_b.Stop();
 }
 

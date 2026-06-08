@@ -81,6 +81,10 @@ struct Prescan {
   std::int64_t last_event_id = 0;
   // Ordered command-generating events, for non-determinism detection on replay.
   std::vector<CommandEvent> commands;
+  // SideEffect marker payloads in call order; Version markers as
+  // (change-id payloads, version payloads), parsed lazily by the runner.
+  std::vector<Payload> side_effects;
+  std::vector<std::pair<Payloads, Payloads>> version_markers;
 };
 
 // Walk the event history once, indexing the inputs/outcomes the runner replays
@@ -175,10 +179,27 @@ Prescan ScanHistory(const hist::History& history) {
       case enums::EVENT_TYPE_WORKFLOW_EXECUTION_CANCEL_REQUESTED:
         ps.cancel_requested = true;
         break;
-      case enums::EVENT_TYPE_MARKER_RECORDED:
-        ps.commands.push_back(
-            {CommandEvent::Kind::Marker, ev.marker_recorded_event_attributes().marker_name(), ""});
+      case enums::EVENT_TYPE_MARKER_RECORDED: {
+        const auto& m = ev.marker_recorded_event_attributes();
+        ps.commands.push_back({CommandEvent::Kind::Marker, m.marker_name(), ""});
+        if (m.marker_name() == "SideEffect") {
+          const auto it = m.details().find("data");
+          if (it != m.details().end()) {
+            Payloads data = FromProtoPayloads(it->second);
+            if (!data.empty()) {
+              ps.side_effects.push_back(std::move(data[0]));
+            }
+          }
+        } else if (m.marker_name() == "Version") {
+          const auto id_it = m.details().find("change-id");
+          const auto ver_it = m.details().find("version");
+          if (id_it != m.details().end() && ver_it != m.details().end()) {
+            ps.version_markers.emplace_back(FromProtoPayloads(id_it->second),
+                                            FromProtoPayloads(ver_it->second));
+          }
+        }
         break;
+      }
       case enums::EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED:
         ps.commands.push_back({CommandEvent::Kind::CompleteWorkflow, "", ""});
         break;
@@ -213,7 +234,21 @@ class WorkflowRunner final : public WorkflowOutbound {
         scan_(std::move(scan)),
         converter_(converter),
         workflow_fn_(std::move(workflow_fn)),
-        input_(std::move(input)) {}
+        input_(std::move(input)) {
+    // Resolve recorded GetVersion markers up front so GetVersion calls during the
+    // run see the version history recorded.
+    for (const auto& [id_payloads, ver_payloads] : scan_.version_markers) {
+      if (id_payloads.empty() || ver_payloads.empty()) {
+        continue;
+      }
+      try {
+        change_versions_[converter_->FromPayload<std::string>(id_payloads[0])] =
+            converter_->FromPayload<int>(ver_payloads[0]);
+      } catch (const std::exception&) {
+        // Ignore a malformed version marker rather than failing the whole task.
+      }
+    }
+  }
 
   // Run the workflow until it blocks or finishes. Prescan resolves every
   // history-known future up front, so a single resume reaches the current block.
@@ -335,6 +370,50 @@ class WorkflowRunner final : public WorkflowOutbound {
     }
     child_futures_[id] = state;
     return state;
+  }
+
+  std::optional<Payload> ReplaySideEffect() override {
+    produced_commands_.push_back({CommandEvent::Kind::Marker, "SideEffect", ""});
+    const std::size_t ordinal = side_effect_seq_++;
+    if (ordinal < scan_.side_effects.size()) {
+      return scan_.side_effects[ordinal];
+    }
+    return std::nullopt;
+  }
+
+  void RecordSideEffect(const Payload& value) override {
+    const auto id = static_cast<std::int64_t>(side_effect_seq_ - 1);
+    EmitRecordMarker(
+        "SideEffect",
+        {{"side-effect-id", Payloads{converter_->ToPayload(id)}}, {"data", Payloads{value}}});
+  }
+
+  int GetVersion(const std::string& change_id, int min_supported, int max_supported) override {
+    const auto it = change_versions_.find(change_id);
+    if (it != change_versions_.end()) {
+      produced_commands_.push_back({CommandEvent::Kind::Marker, "Version", ""});
+      const int v = it->second;
+      if (v < min_supported || v > max_supported) {
+        throw ApplicationError("workflow change '" + change_id + "': recorded version " +
+                                   std::to_string(v) + " not in supported range [" +
+                                   std::to_string(min_supported) + ", " +
+                                   std::to_string(max_supported) + "]",
+                               "VersionMismatch");
+      }
+      return v;
+    }
+    if (is_replaying_) {
+      // A GetVersion call replaying history that predates it: no marker exists and
+      // none is recorded here, so no command is produced.
+      change_versions_[change_id] = workflow::kDefaultVersion;
+      return workflow::kDefaultVersion;
+    }
+    produced_commands_.push_back({CommandEvent::Kind::Marker, "Version", ""});
+    const int version = max_supported;
+    EmitRecordMarker("Version", {{"change-id", Payloads{converter_->ToPayload(change_id)}},
+                                 {"version", Payloads{converter_->ToPayload(version)}}});
+    change_versions_[change_id] = version;
+    return version;
   }
 
   void Block(const std::shared_ptr<FutureState>& state) override {
@@ -556,6 +635,18 @@ class WorkflowRunner final : public WorkflowOutbound {
     commands_.push_back(std::move(c));
   }
 
+  void EmitRecordMarker(const std::string& name,
+                        const std::vector<std::pair<std::string, Payloads>>& details) {
+    cmd::Command c;
+    c.set_command_type(enums::COMMAND_TYPE_RECORD_MARKER);
+    auto* attr = c.mutable_record_marker_command_attributes();
+    attr->set_marker_name(name);
+    for (const auto& [key, payloads] : details) {
+      (*attr->mutable_details())[key] = ToProtoPayloads(payloads);
+    }
+    commands_.push_back(std::move(c));
+  }
+
   workflow::WorkflowInfo info_;
   std::shared_ptr<log::Logger> logger_;
   bool is_replaying_;
@@ -578,6 +669,8 @@ class WorkflowRunner final : public WorkflowOutbound {
   int activity_seq_ = 0;
   int timer_seq_ = 0;
   int child_seq_ = 0;
+  std::size_t side_effect_seq_ = 0;
+  std::unordered_map<std::string, int> change_versions_;
   std::unique_ptr<Coroutine> coroutine_;  // declared last -> destroyed first (tears down thread)
 };
 

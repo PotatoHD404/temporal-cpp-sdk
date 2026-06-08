@@ -52,7 +52,8 @@ priority/dependency.
   and **replay re-application** of updates after a cache eviction.
 - Richer **cancellation scopes** (current cancellation is observe-only via `IsCancelled()`) and
   selector **channel cases** (the current `Selector` supports future cases).
-- **SideEffect / MutableSideEffect**, **`GetVersion`** versioning.
+- **SideEffect** ✅ + **`GetVersion`** versioning ✅ — marker record/replay (RecordMarker command;
+  SideEffect keyed by call order, Version by change id). MutableSideEffect remaining.
 - **Local activities**.
 
 ## Phase 3 — production concerns

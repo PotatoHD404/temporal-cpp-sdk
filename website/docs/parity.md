@@ -61,8 +61,8 @@ cache. This page is the honest accounting.
 | Continue-as-new | ✅ | |
 | Observe cancellation (`IsCancelled`) | ✅ | |
 | Cancellation scopes / propagation | ❌ | not propagated to activities/timers |
-| `GetVersion` / patching | ❌ | |
-| SideEffect / MutableSideEffect | ❌ | |
+| `GetVersion` / patching | ✅ | marker-based; `kDefaultVersion` on pre-version history |
+| SideEffect / MutableSideEffect | 🟡 | `SideEffect` ✅ (marker record/replay); MutableSideEffect ❌ |
 | Local activities | ❌ | |
 | External-workflow signal/cancel | ❌ | |
 | Search attributes / memo / upsert | ❌ | |
@@ -121,8 +121,9 @@ Rough priority order (see the repo's `docs/ROADMAP.md` for detail):
 1. **Determinism hardening** — ✅ non-determinism detection (commands matched to history on
    replay); remaining: history pagination, bounded sticky-cache LRU, heartbeat throttling + cancel
    detection.
-2. **Workflow feature surface** — update validators, richer cancellation scopes, selector channel
-   cases, SideEffect/MutableSideEffect, `GetVersion` versioning, local activities.
+2. **Workflow feature surface** — ✅ `SideEffect` + `GetVersion` versioning; remaining: update
+   validators, richer cancellation scopes, selector channel cases, MutableSideEffect, local
+   activities.
 3. **Production concerns** — TLS/mTLS + API-key auth, interceptors, metrics & tracing,
    proto/protoJSON converters + payload codecs, worker tuning.
 4. **Breadth** — schedules, Nexus, worker versioning, a replay/test framework, search attributes,

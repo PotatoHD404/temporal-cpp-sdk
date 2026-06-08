@@ -3,6 +3,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -88,6 +89,18 @@ class WorkflowOutbound {
   // Register an update handler. Like a query, but the call is recorded
   // (accepted + completed) and may mutate workflow state.
   virtual void RegisterUpdateHandler(std::string name, QueryFn handler) = 0;
+
+  // SideEffect: advance the deterministic side-effect counter and return the
+  // value recorded in history for this call, or nullopt if there is none yet
+  // (the caller then runs the function and records the result via
+  // RecordSideEffect). Lets a workflow capture a non-deterministic value once.
+  virtual std::optional<Payload> ReplaySideEffect() = 0;
+  virtual void RecordSideEffect(const Payload& value) = 0;
+
+  // GetVersion: returns the version recorded in history for `change_id`, or
+  // selects `max_supported` on first (live) execution and records a marker; on
+  // replay of history that predates the call, returns kDefaultVersion (-1).
+  virtual int GetVersion(const std::string& change_id, int min_supported, int max_supported) = 0;
 
   virtual const workflow::WorkflowInfo& Info() const = 0;
   virtual log::Logger& Logger() const = 0;
