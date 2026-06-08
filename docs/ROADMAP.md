@@ -86,6 +86,11 @@ priority/dependency.
 
 ## Build / packaging
 
-- `install()` rules + a CMake package config (`find_package(temporal-cpp)`), pkg-config.
-- vcpkg/Conan packaging; Linux CI matrix (Clang/GCC) in addition to macOS.
+- `install()` rules + a CMake package config ✅ — `find_package(temporal-cpp CONFIG)` exports
+  `temporal::sdk`/`temporal::proto`; guarded by a downstream-consumer CI smoke test
+  (`tests/packaging/`). pkg-config remaining.
+- **Conan** packaging ✅ — `conanfile.py` (CMakeToolchain + CMakeDeps); a CI job exercises the recipe
+  (non-blocking until verified on a Conan host). vcpkg port remaining.
+- **Linux CI** ✅ — apt-based Ubuntu job (build + unit tests) alongside macOS. Windows/MSVC is
+  compiler-flag-clean (warning flags gated, tools resolved from imported targets) but not yet CI-covered.
 - Optional: build protobuf/gRPC via `FetchContent` for hermetic builds.

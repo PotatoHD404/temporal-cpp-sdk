@@ -1,0 +1,18 @@
+@PACKAGE_INIT@
+
+# temporal-cpp package config.
+#
+# The exported temporal::sdk static archive links its transitive dependencies
+# PUBLIC (temporal::proto -> protobuf + gRPC; plus nlohmann_json and Threads),
+# so a consumer's link line needs them too. Re-find them here before pulling in
+# the exported targets.
+include(CMakeFindDependencyMacro)
+
+find_dependency(protobuf CONFIG)
+find_dependency(gRPC CONFIG)
+find_dependency(nlohmann_json CONFIG)
+find_dependency(Threads)
+
+include("${CMAKE_CURRENT_LIST_DIR}/temporal-cpp-targets.cmake")
+
+check_required_components(temporal-cpp)

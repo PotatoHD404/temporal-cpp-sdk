@@ -5,6 +5,7 @@ const sidebars = {
   docs: [
     'intro',
     'getting-started',
+    'installation',
     'tutorial',
     'concepts',
     {

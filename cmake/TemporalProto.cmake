@@ -17,10 +17,46 @@ if(NOT EXISTS "${TEMPORAL_API_ROOT}/temporal/api/workflowservice/v1/service.prot
     "Run:  git submodule update --init --recursive")
 endif()
 
-find_program(PROTOC_EXECUTABLE protoc
-  HINTS "${HOMEBREW_PREFIX}/bin" /opt/homebrew/bin /usr/local/bin REQUIRED)
-find_program(GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin
-  HINTS "${HOMEBREW_PREFIX}/bin" /opt/homebrew/bin /usr/local/bin REQUIRED)
+# Resolve `protoc` and `grpc_cpp_plugin` cross-platform.
+#
+# Both Homebrew's and Conan's CMake config packages export imported executable
+# targets (protobuf::protoc, gRPC::grpc_cpp_plugin); prefer those so the tools
+# come from whatever provided the libraries (no hardcoded paths; works on
+# Linux/Windows/macOS). Fall back to find_program for plain system installs that
+# ship only the binaries, keeping the Homebrew hints for the macOS quick-path.
+#
+# Protos are generated at configure time via execute_process(), where generator
+# expressions like $<TARGET_FILE:...> are NOT evaluated. So read the imported
+# target's on-disk location (IMPORTED_LOCATION[_<CONFIG>]) directly instead.
+function(_temporal_imported_exe _target _out_var)
+  get_target_property(_loc "${_target}" IMPORTED_LOCATION)
+  if(NOT _loc)
+    get_target_property(_cfgs "${_target}" IMPORTED_CONFIGURATIONS)
+    foreach(_cfg IN LISTS _cfgs)
+      get_target_property(_loc "${_target}" "IMPORTED_LOCATION_${_cfg}")
+      if(_loc)
+        break()
+      endif()
+    endforeach()
+  endif()
+  set(${_out_var} "${_loc}" PARENT_SCOPE)
+endfunction()
+
+if(TARGET protobuf::protoc)
+  _temporal_imported_exe(protobuf::protoc PROTOC_EXECUTABLE)
+endif()
+if(NOT PROTOC_EXECUTABLE)
+  find_program(PROTOC_EXECUTABLE protoc
+    HINTS "${HOMEBREW_PREFIX}/bin" /opt/homebrew/bin /usr/local/bin REQUIRED)
+endif()
+
+if(TARGET gRPC::grpc_cpp_plugin)
+  _temporal_imported_exe(gRPC::grpc_cpp_plugin GRPC_CPP_PLUGIN_EXECUTABLE)
+endif()
+if(NOT GRPC_CPP_PLUGIN_EXECUTABLE)
+  find_program(GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin
+    HINTS "${HOMEBREW_PREFIX}/bin" /opt/homebrew/bin /usr/local/bin REQUIRED)
+endif()
 
 file(MAKE_DIRECTORY "${TEMPORAL_PROTO_GEN_DIR}")
 
@@ -63,9 +99,34 @@ file(GLOB_RECURSE _gen_srcs CONFIGURE_DEPENDS "${TEMPORAL_PROTO_GEN_DIR}/*.pb.cc
 
 add_library(temporal_proto STATIC ${_gen_srcs})
 target_include_directories(temporal_proto SYSTEM PUBLIC
-  "${TEMPORAL_PROTO_GEN_DIR}")
+  $<BUILD_INTERFACE:${TEMPORAL_PROTO_GEN_DIR}>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(temporal_proto PUBLIC
   protobuf::libprotobuf gRPC::grpc++)
 # Generated code is third-party-ish: never lint it, silence its warnings.
-target_compile_options(temporal_proto PRIVATE -w)
+# MSVC spells "suppress everything" as /w, GNU/Clang as -w.
+target_compile_options(temporal_proto PRIVATE
+  $<IF:$<CXX_COMPILER_ID:MSVC>,/w,-w>)
 set_target_properties(temporal_proto PROPERTIES CXX_CLANG_TIDY "")
+
+# ---- Install (opt-out via -DTEMPORAL_INSTALL=OFF) --------------------------
+# The SDK static archive links temporal_proto PUBLIC, so a downstream consumer
+# of the installed temporal::sdk must also be able to find temporal_proto and
+# the generated headers it exposes. Ship both as part of the export set.
+if(TEMPORAL_INSTALL)
+  # Export as temporal::proto (see temporal-cpp-config.cmake.in), not the raw
+  # temporal::temporal_proto the namespace would otherwise produce.
+  set_target_properties(temporal_proto PROPERTIES EXPORT_NAME proto)
+  install(TARGETS temporal_proto
+    EXPORT temporal-cpp-targets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+  # Generated *.pb.h / *.grpc.pb.h, preserving the temporal/… directory layout.
+  install(DIRECTORY "${TEMPORAL_PROTO_GEN_DIR}/"
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    FILES_MATCHING
+      PATTERN "*.pb.h"
+      PATTERN "*.grpc.pb.h")
+endif()

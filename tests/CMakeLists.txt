@@ -1,10 +1,17 @@
-include(FetchContent)
-FetchContent_Declare(
-  googletest
-  GIT_REPOSITORY https://github.com/google/googletest.git
-  GIT_TAG v1.15.2)
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googletest)
+# Prefer a GTest config package when one is provided (e.g. by Conan or a system
+# install); otherwise fetch it. Both paths yield the GTest::gtest_main target.
+find_package(GTest CONFIG QUIET)
+if(NOT TARGET GTest::gtest_main)
+  include(FetchContent)
+  FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.15.2)
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  # Don't let GoogleTest contribute install rules to `cmake --install`.
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+endif()
 
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cpp")
 add_executable(temporal_tests ${TEST_SOURCES})
