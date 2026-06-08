@@ -36,8 +36,9 @@ priority/dependency.
 
 ## Phase 1 — robustness & determinism hardening
 
-- **Bounded sticky-cache LRU**: the sticky cache exists and is keyed by run id, but is currently
-  unbounded (completed workflows are evicted); add a size cap + LRU eviction.
+- **Bounded sticky-cache LRU** ✅ — `WorkerOptions::max_cached_workflows` caps the resident workflow
+  count; the least-recently-used run is evicted (`src/internal/lru_cache.h`), and its next task
+  triggers a from-scratch replay. 0 means unbounded.
 - **Non-determinism detection** ✅: on a full-history replay the workflow's emitted commands are
   matched in order against the command events history recorded (`src/internal/determinism.h`);
   divergences surface per `WorkflowPanicPolicy` (BlockWorkflow default fails the task so a fixed

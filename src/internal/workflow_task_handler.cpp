@@ -785,13 +785,15 @@ std::shared_ptr<WorkflowRunner> BuildRunnerForQuery(GrpcClient* grpc,
 
 WorkflowTaskHandler::WorkflowTaskHandler(GrpcClient* grpc, std::shared_ptr<DataConverter> converter,
                                          std::shared_ptr<log::Logger> logger, std::string task_queue,
-                                         std::string sticky_queue, WorkflowPanicPolicy panic_policy)
+                                         std::string sticky_queue, WorkflowPanicPolicy panic_policy,
+                                         int max_cached_workflows)
     : grpc_(grpc),
       converter_(std::move(converter)),
       logger_(std::move(logger)),
       task_queue_(std::move(task_queue)),
       sticky_queue_(std::move(sticky_queue)),
-      panic_policy_(panic_policy) {}
+      panic_policy_(panic_policy),
+      cache_(max_cached_workflows > 0 ? static_cast<std::size_t>(max_cached_workflows) : 0) {}
 
 void WorkflowTaskHandler::Register(std::string name, worker::WorkflowFn fn) {
   workflows_.insert_or_assign(std::move(name), std::move(fn));
@@ -866,9 +868,9 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
   bool cache_hit = false;
   if (!is_full_history) {
     const std::lock_guard<std::mutex> lock(cache_mu_);
-    const auto it = cache_.find(run_id);
-    if (it != cache_.end()) {
-      auto cached = std::static_pointer_cast<WorkflowRunner>(it->second);
+    auto* slot = cache_.Get(run_id);  // marks the run most-recently-used
+    if (slot != nullptr) {
+      auto cached = std::static_pointer_cast<WorkflowRunner>(*slot);
       // A sticky query carries no new history and is answered from the resident
       // state as-is; a normal continuation must resume exactly at our checkpoint.
       if (is_query_task || first_event_id == cached->last_event_id() + 1) {
@@ -935,7 +937,7 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
       }
       // Don't cache a context built solely to answer a (full-history) query.
       const std::lock_guard<std::mutex> lock(cache_mu_);
-      cache_[run_id] = runner;
+      cache_.Put(run_id, runner);  // evicts the LRU run if over capacity
     }
   }
 
@@ -1079,7 +1081,7 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
   // Drop finished workflows from the cache.
   if (runner->IsDone()) {
     const std::lock_guard<std::mutex> lock(cache_mu_);
-    cache_.erase(run_id);
+    cache_.Erase(run_id);
   }
 }
 

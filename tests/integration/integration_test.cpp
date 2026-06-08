@@ -729,4 +729,33 @@ TEST_F(IntegrationTest, SignalWithStartCreatesAndSignals) {
   worker.Stop();
 }
 
+// With a bounded sticky cache (capacity 1), starting a second workflow evicts the
+// first; the first's next task then triggers a from-scratch replay. Both still
+// complete correctly, proving eviction + replay-recovery.
+TEST_F(IntegrationTest, BoundedCacheEvictsAndStillCompletes) {
+  const auto tq = UniqueTaskQueue("lru");
+  temporal::WorkerOptions wo;
+  wo.max_cached_workflows = 1;  // only one resident workflow at a time
+  temporal::worker::Worker worker(*client_, tq, wo);
+  worker.RegisterWorkflow("GreetBySignalWorkflow", GreetBySignalWorkflow);
+  worker.Start();
+  const auto dc = temporal::DataConverter::Default();
+
+  temporal::StartWorkflowOptions oa;
+  oa.task_queue = tq;
+  auto a = client_->StartWorkflow(oa, "GreetBySignalWorkflow");
+  std::this_thread::sleep_for(3s);  // A is processed and cached
+  temporal::StartWorkflowOptions ob;
+  ob.task_queue = tq;
+  auto b = client_->StartWorkflow(ob, "GreetBySignalWorkflow");
+  std::this_thread::sleep_for(3s);  // B is cached -> A evicted (capacity 1)
+
+  a.Signal("setName", dc->ToPayloads(std::string("Ada")));
+  b.Signal("setName", dc->ToPayloads(std::string("Linus")));
+  EXPECT_EQ(a.Result<std::string>(), "Hello, Ada");      // recovered via replay
+  EXPECT_EQ(b.Result<std::string>(), "Hello, Linus");
+  EXPECT_GE(worker.replays(), 3);  // 2 first-tasks + at least one eviction-replay
+  worker.Stop();
+}
+
 }  // namespace

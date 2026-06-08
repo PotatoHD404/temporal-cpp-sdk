@@ -40,7 +40,7 @@ WorkerImpl::WorkerImpl(std::shared_ptr<GrpcClient> grpc, std::shared_ptr<DataCon
       sticky_queue_("temporal-cpp-sticky-" + NewUuid()),
       options_(options),
       workflow_handler_(grpc_.get(), converter_, logger_, task_queue_, sticky_queue_,
-                        options.panic_policy),
+                        options.panic_policy, options.max_cached_workflows),
       activity_handler_(grpc_.get(), converter_, logger_, task_queue_) {}
 
 WorkerImpl::~WorkerImpl() { Stop(); }

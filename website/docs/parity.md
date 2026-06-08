@@ -40,7 +40,7 @@ cache. This page is the honest accounting.
 | Register workflows / activities | ✅ | plain `R(Context&, Args...)` functions |
 | Poller threads, start/stop/run | ✅ | |
 | Sticky cache (resident workflows) | ✅ | incremental-history continuations |
-| Bounded cache LRU / eviction tuning | ❌ | evicts on completion only |
+| Bounded cache LRU / eviction tuning | ✅ | `max_cached_workflows` (LRU eviction) |
 | Concurrency / rate limiting (wired) | 🟡 | options exist; not all enforced |
 | Poller autoscaling, graceful drain | ❌ | |
 | Worker versioning / Build IDs / deployments | ❌ | |
@@ -118,9 +118,8 @@ cache. This page is the honest accounting.
 
 Rough priority order (see the repo's `docs/ROADMAP.md` for detail):
 
-1. **Determinism hardening** — ✅ non-determinism detection (commands matched to history on
-   replay); remaining: history pagination, bounded sticky-cache LRU, heartbeat throttling + cancel
-   detection.
+1. **Determinism hardening** — ✅ non-determinism detection + bounded sticky-cache LRU
+   (`max_cached_workflows`); remaining: history pagination, heartbeat throttling + cancel detection.
 2. **Workflow feature surface** — ✅ `SideEffect` + `GetVersion` + update validators + timer
    cancellation (`Future::Cancel`); remaining: activity/child cancel + propagation, selector channel
    cases, MutableSideEffect, local activities.

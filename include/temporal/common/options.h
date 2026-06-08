@@ -84,6 +84,9 @@ struct WorkerOptions {
   int workflow_task_pollers = 1;
   int activity_task_pollers = 1;
   WorkflowPanicPolicy panic_policy = WorkflowPanicPolicy::BlockWorkflow;
+  // Max resident (sticky-cached) workflows; 0 => unbounded. Beyond this, the
+  // least-recently-used workflow is evicted (its next task triggers a replay).
+  int max_cached_workflows = 0;
 };
 
 }  // namespace temporal

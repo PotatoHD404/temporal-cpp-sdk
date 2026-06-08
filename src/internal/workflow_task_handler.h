@@ -10,6 +10,8 @@
 #include "temporal/api/history/v1/message.pb.h"
 #include "temporal/api/workflowservice/v1/request_response.pb.h"
 
+#include "internal/lru_cache.h"
+
 #include <temporal/converter/data_converter.h>
 #include <temporal/log/logger.h>
 #include <temporal/worker/worker.h>
@@ -31,7 +33,8 @@ class WorkflowTaskHandler {
   WorkflowTaskHandler(GrpcClient* grpc, std::shared_ptr<DataConverter> converter,
                       std::shared_ptr<log::Logger> logger, std::string task_queue,
                       std::string sticky_queue,
-                      WorkflowPanicPolicy panic_policy = WorkflowPanicPolicy::BlockWorkflow);
+                      WorkflowPanicPolicy panic_policy = WorkflowPanicPolicy::BlockWorkflow,
+                      int max_cached_workflows = 0);
 
   void Register(std::string name, worker::WorkflowFn fn);
   bool has_workflows() const { return !workflows_.empty(); }
@@ -57,7 +60,7 @@ class WorkflowTaskHandler {
   std::unordered_map<std::string, worker::WorkflowFn> workflows_;
 
   std::mutex cache_mu_;
-  std::unordered_map<std::string, std::shared_ptr<void>> cache_;  // run_id -> WorkflowRunner
+  LruCache<std::string, std::shared_ptr<void>> cache_;  // run_id -> WorkflowRunner (LRU-bounded)
   std::atomic<long> cache_hits_{0};
   std::atomic<long> replays_{0};
 };
