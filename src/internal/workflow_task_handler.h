@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -16,28 +18,38 @@ namespace wsv = ::temporal::api::workflowservice::v1;
 
 class GrpcClient;
 
-// Drives a workflow task to completion. Runs non-sticky: the server delivers the
-// full history each task, and the workflow function is re-executed from the start
-// against it. Operations whose results are already in history resolve
-// immediately; the first unresolved `Future::Get()` parks the workflow (throws
-// WorkflowBlocked) and the task is finalized with whatever commands were emitted.
-// See docs/ARCHITECTURE.md for the determinism model and its limits.
+// Drives workflow tasks. Uses a **sticky cache**: a running workflow's coroutine
+// is kept alive between tasks, keyed by run id, and continuation tasks apply only
+// the incremental history before resuming — no full re-replay. A task whose
+// history does not continue the cached state (first task, or a sticky-cache miss)
+// is replayed from full history and (re)cached. See docs/ARCHITECTURE.md.
 class WorkflowTaskHandler {
  public:
   WorkflowTaskHandler(GrpcClient* grpc, std::shared_ptr<DataConverter> converter,
-                      std::shared_ptr<log::Logger> logger, std::string task_queue);
+                      std::shared_ptr<log::Logger> logger, std::string task_queue,
+                      std::string sticky_queue);
 
   void Register(std::string name, worker::WorkflowFn fn);
   bool has_workflows() const { return !workflows_.empty(); }
 
   void Handle(const wsv::PollWorkflowTaskQueueResponse& task);
 
+  // Test/inspection counters: continuations served from the cache vs. full replays.
+  long cache_hits() const { return cache_hits_.load(); }
+  long replays() const { return replays_.load(); }
+
  private:
   GrpcClient* grpc_;
   std::shared_ptr<DataConverter> converter_;
   std::shared_ptr<log::Logger> logger_;
   std::string task_queue_;
+  std::string sticky_queue_;
   std::unordered_map<std::string, worker::WorkflowFn> workflows_;
+
+  std::mutex cache_mu_;
+  std::unordered_map<std::string, std::shared_ptr<void>> cache_;  // run_id -> WorkflowRunner
+  std::atomic<long> cache_hits_{0};
+  std::atomic<long> replays_{0};
 };
 
 }  // namespace temporal::internal

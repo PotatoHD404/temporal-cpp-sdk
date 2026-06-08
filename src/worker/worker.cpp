@@ -29,4 +29,8 @@ void Worker::Run() { impl_->Run(); }
 
 void Worker::Stop() { impl_->Stop(); }
 
+long Worker::cache_hits() const { return impl_->cache_hits(); }
+
+long Worker::replays() const { return impl_->replays(); }
+
 }  // namespace temporal::worker

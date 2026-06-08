@@ -13,9 +13,12 @@
 #include "temporal/api/command/v1/message.pb.h"
 #include "temporal/api/enums/v1/command_type.pb.h"
 #include "temporal/api/enums/v1/event_type.pb.h"
+#include "temporal/api/enums/v1/failed_cause.pb.h"
 #include "temporal/api/enums/v1/query.pb.h"
+#include "temporal/api/enums/v1/task_queue.pb.h"
 #include "temporal/api/history/v1/message.pb.h"
 #include "temporal/api/query/v1/message.pb.h"
+#include "temporal/api/taskqueue/v1/message.pb.h"
 
 #include "internal/coroutine.h"
 #include "internal/grpc_client.h"
@@ -54,6 +57,10 @@ struct Prescan {
   std::unordered_map<std::string, TimerOutcome> timers;         // keyed by timer_id
   std::unordered_map<std::string, std::vector<Payloads>> signals;  // keyed by signal name
   bool cancel_requested = false;
+  // For incremental (sticky) continuations: correlate completion events to the
+  // activity_id of their schedule, and remember how far history has been consumed.
+  std::unordered_map<std::int64_t, std::string> sched_event_to_activity;
+  std::int64_t last_event_id = 0;
 };
 
 // Walk the event history once, indexing the inputs/outcomes the runner replays
@@ -61,8 +68,8 @@ struct Prescan {
 // scheduled event id that those events carry.
 Prescan ScanHistory(const hist::History& history) {
   Prescan ps;
-  std::unordered_map<std::int64_t, std::string> sched_event_to_activity;
   for (const auto& ev : history.events()) {
+    ps.last_event_id = ev.event_id();
     switch (ev.event_type()) {
       case enums::EVENT_TYPE_WORKFLOW_EXECUTION_STARTED:
         ps.input = FromProtoPayloads(ev.workflow_execution_started_event_attributes().input());
@@ -70,13 +77,13 @@ Prescan ScanHistory(const hist::History& history) {
       case enums::EVENT_TYPE_ACTIVITY_TASK_SCHEDULED: {
         const auto& a = ev.activity_task_scheduled_event_attributes();
         ps.activities[a.activity_id()].scheduled = true;
-        sched_event_to_activity[ev.event_id()] = a.activity_id();
+        ps.sched_event_to_activity[ev.event_id()] = a.activity_id();
         break;
       }
       case enums::EVENT_TYPE_ACTIVITY_TASK_COMPLETED: {
         const auto& a = ev.activity_task_completed_event_attributes();
-        const auto it = sched_event_to_activity.find(a.scheduled_event_id());
-        if (it != sched_event_to_activity.end()) {
+        const auto it = ps.sched_event_to_activity.find(a.scheduled_event_id());
+        if (it != ps.sched_event_to_activity.end()) {
           auto& o = ps.activities[it->second];
           o.resolved = true;
           o.result = FromProtoPayloads(a.result());
@@ -85,8 +92,8 @@ Prescan ScanHistory(const hist::History& history) {
       }
       case enums::EVENT_TYPE_ACTIVITY_TASK_FAILED: {
         const auto& a = ev.activity_task_failed_event_attributes();
-        const auto it = sched_event_to_activity.find(a.scheduled_event_id());
-        if (it != sched_event_to_activity.end()) {
+        const auto it = ps.sched_event_to_activity.find(a.scheduled_event_id());
+        if (it != ps.sched_event_to_activity.end()) {
           auto& o = ps.activities[it->second];
           o.resolved = true;
           o.failed = true;
@@ -97,8 +104,8 @@ Prescan ScanHistory(const hist::History& history) {
       }
       case enums::EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT: {
         const auto& a = ev.activity_task_timed_out_event_attributes();
-        const auto it = sched_event_to_activity.find(a.scheduled_event_id());
-        if (it != sched_event_to_activity.end()) {
+        const auto it = ps.sched_event_to_activity.find(a.scheduled_event_id());
+        if (it != ps.sched_event_to_activity.end()) {
           auto& o = ps.activities[it->second];
           o.resolved = true;
           o.failed = true;
@@ -150,12 +157,27 @@ class WorkflowRunner final : public WorkflowOutbound {
 
   // Run the workflow until it blocks or finishes. Prescan resolves every
   // history-known future up front, so a single resume reaches the current block.
+  // Used for the first task and for replay after a sticky-cache miss.
   void Run() {
+    commands_.clear();
     if (!coroutine_) {
       coroutine_ = std::make_unique<Coroutine>([this] { RunBody(); });
     }
     coroutine_->Resume();
   }
+
+  // Sticky continuation: apply only the new history events to the live futures
+  // (and signal/cancel state), then resume the cached coroutine from where it
+  // parked — no re-replay from the start.
+  void ApplyAndResume(const hist::History& history) {
+    commands_.clear();
+    ApplyEvents(history);
+    if (coroutine_) {
+      coroutine_->Resume();
+    }
+  }
+
+  std::int64_t last_event_id() const { return scan_.last_event_id; }
 
   bool Completed() const { return status_ == Status::Completed; }
   bool Failed() const { return status_ == Status::Failed; }
@@ -191,6 +213,7 @@ class WorkflowRunner final : public WorkflowOutbound {
     } else {
       EmitScheduleActivity(id, activity_type, input, options);
     }
+    activity_futures_[id] = state;  // so incremental completion events can resolve it
     return state;
   }
 
@@ -203,6 +226,7 @@ class WorkflowRunner final : public WorkflowOutbound {
     } else {
       EmitStartTimer(id, duration);
     }
+    timer_futures_[id] = state;
     return state;
   }
 
@@ -258,6 +282,74 @@ class WorkflowRunner final : public WorkflowOutbound {
     }
   }
 
+  // Resolve the live future for the activity whose schedule had this event id.
+  void ResolveActivity(std::int64_t scheduled_event_id, bool failed, Payloads result,
+                       std::string failure_type, std::string failure_message) {
+    const auto m = scan_.sched_event_to_activity.find(scheduled_event_id);
+    if (m == scan_.sched_event_to_activity.end()) {
+      return;
+    }
+    const auto it = activity_futures_.find(m->second);
+    if (it == activity_futures_.end()) {
+      return;
+    }
+    auto& st = *it->second;
+    st.ready = true;
+    st.failed = failed;
+    st.result = std::move(result);
+    st.failure_type = std::move(failure_type);
+    st.failure_message = std::move(failure_message);
+  }
+
+  // Apply history events newer than last_event_id to live futures / signal state.
+  void ApplyEvents(const hist::History& history) {
+    for (const auto& ev : history.events()) {
+      if (ev.event_id() <= scan_.last_event_id) {
+        continue;
+      }
+      switch (ev.event_type()) {
+        case enums::EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:
+          scan_.sched_event_to_activity[ev.event_id()] =
+              ev.activity_task_scheduled_event_attributes().activity_id();
+          break;
+        case enums::EVENT_TYPE_ACTIVITY_TASK_COMPLETED: {
+          const auto& a = ev.activity_task_completed_event_attributes();
+          ResolveActivity(a.scheduled_event_id(), false, FromProtoPayloads(a.result()), "", "");
+          break;
+        }
+        case enums::EVENT_TYPE_ACTIVITY_TASK_FAILED: {
+          const auto& a = ev.activity_task_failed_event_attributes();
+          ResolveActivity(a.scheduled_event_id(), true, {},
+                          a.failure().application_failure_info().type(), a.failure().message());
+          break;
+        }
+        case enums::EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT: {
+          const auto& a = ev.activity_task_timed_out_event_attributes();
+          ResolveActivity(a.scheduled_event_id(), true, {}, "TimeoutError", "activity timed out");
+          break;
+        }
+        case enums::EVENT_TYPE_TIMER_FIRED: {
+          const auto it = timer_futures_.find(ev.timer_fired_event_attributes().timer_id());
+          if (it != timer_futures_.end()) {
+            it->second->ready = true;
+          }
+          break;
+        }
+        case enums::EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED: {
+          const auto& a = ev.workflow_execution_signaled_event_attributes();
+          scan_.signals[a.signal_name()].push_back(FromProtoPayloads(a.input()));
+          break;
+        }
+        case enums::EVENT_TYPE_WORKFLOW_EXECUTION_CANCEL_REQUESTED:
+          scan_.cancel_requested = true;
+          break;
+        default:
+          break;
+      }
+      scan_.last_event_id = ev.event_id();
+    }
+  }
+
   void EmitScheduleActivity(const std::string& id, std::string_view activity_type,
                             const Payloads& input, const ActivityOptions& options) {
     cmd::Command c;
@@ -308,6 +400,8 @@ class WorkflowRunner final : public WorkflowOutbound {
   Payloads input_;
   std::unordered_map<std::string, std::size_t> signal_cursor_;
   std::unordered_map<std::string, QueryFn> query_handlers_;
+  std::unordered_map<std::string, std::shared_ptr<FutureState>> activity_futures_;  // by activity_id
+  std::unordered_map<std::string, std::shared_ptr<FutureState>> timer_futures_;     // by timer_id
   std::vector<cmd::Command> commands_;
   Status status_ = Status::Blocked;
   Payloads result_;
@@ -320,11 +414,13 @@ class WorkflowRunner final : public WorkflowOutbound {
 }  // namespace
 
 WorkflowTaskHandler::WorkflowTaskHandler(GrpcClient* grpc, std::shared_ptr<DataConverter> converter,
-                                         std::shared_ptr<log::Logger> logger, std::string task_queue)
+                                         std::shared_ptr<log::Logger> logger, std::string task_queue,
+                                         std::string sticky_queue)
     : grpc_(grpc),
       converter_(std::move(converter)),
       logger_(std::move(logger)),
-      task_queue_(std::move(task_queue)) {}
+      task_queue_(std::move(task_queue)),
+      sticky_queue_(std::move(sticky_queue)) {}
 
 void WorkflowTaskHandler::Register(std::string name, worker::WorkflowFn fn) {
   workflows_.insert_or_assign(std::move(name), std::move(fn));
@@ -350,24 +446,58 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
     return;
   }
 
-  Prescan scan = ScanHistory(task.history());
-  Payloads input = scan.input;
-  const bool is_replaying = task.previous_started_event_id() > 0;
-  WorkflowRunner runner(info, logger_, is_replaying, std::move(scan), converter_.get(), wf->second,
-                        std::move(input));
-  runner.Run();
+  const std::string& run_id = info.run_id;
+  const auto& events = task.history().events();
+  const std::int64_t first_event_id = events.empty() ? 0 : events.Get(0).event_id();
 
-  // A legacy direct-query task carries a single `query` and no new history; answer
-  // it via RespondQueryTaskCompleted, emitting no commands.
+  // Sticky cache: continue a cached coroutine if this task's history picks up
+  // exactly where we left off; otherwise (re)play from full history.
+  std::shared_ptr<WorkflowRunner> runner;
+  {
+    const std::lock_guard<std::mutex> lock(cache_mu_);
+    const auto it = cache_.find(run_id);
+    if (it != cache_.end()) {
+      auto cached = std::static_pointer_cast<WorkflowRunner>(it->second);
+      if (first_event_id == cached->last_event_id() + 1) {
+        runner = std::move(cached);
+      }
+    }
+  }
+
+  if (runner) {
+    cache_hits_.fetch_add(1, std::memory_order_relaxed);
+    runner->ApplyAndResume(task.history());
+  } else if (first_event_id > 1) {
+    // Incremental history with nothing to continue (sticky-cache miss): ask the
+    // server to resend full history on the normal queue.
+    wsv::RespondWorkflowTaskFailedRequest req;
+    req.set_task_token(task.task_token());
+    req.set_identity(grpc_->identity());
+    req.set_cause(enums::WORKFLOW_TASK_FAILED_CAUSE_RESET_STICKY_TASK_QUEUE);
+    grpc_->RespondWorkflowTaskFailed(req);
+    return;
+  } else {
+    replays_.fetch_add(1, std::memory_order_relaxed);
+    Prescan scan = ScanHistory(task.history());
+    Payloads input = scan.input;
+    const bool is_replaying = task.previous_started_event_id() > 0;
+    runner = std::make_shared<WorkflowRunner>(info, logger_, is_replaying, std::move(scan),
+                                              converter_.get(), wf->second, std::move(input));
+    runner->Run();
+    const std::lock_guard<std::mutex> lock(cache_mu_);
+    cache_[run_id] = runner;
+  }
+
+  // A legacy direct-query task carries a single `query` and no new commands.
   if (task.has_query()) {
     wsv::RespondQueryTaskCompletedRequest qreq;
     qreq.set_task_token(task.task_token());
     try {
-      if (runner.IsDone()) {
+      if (runner->IsDone()) {
         throw ApplicationError("cannot query a completed workflow", "QueryFailed");
       }
       const Payloads answer =
-          runner.RunQuery(task.query().query_type(), FromProtoPayloads(task.query().query_args()));
+          runner->RunQuery(task.query().query_type(), FromProtoPayloads(task.query().query_args()));
       qreq.set_completed_type(enums::QUERY_RESULT_TYPE_ANSWERED);
       if (!answer.empty()) {
         *qreq.mutable_query_result() = ToProtoPayloads(answer);
@@ -383,30 +513,38 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
   wsv::RespondWorkflowTaskCompletedRequest req;
   req.set_task_token(task.task_token());
   req.set_identity(grpc_->identity());
-  for (const auto& c : runner.commands()) {
+  // Route future tasks for this run to our sticky queue (so they arrive as
+  // incremental continuations rather than full-history replays).
+  if (!sticky_queue_.empty()) {
+    auto* sticky = req.mutable_sticky_attributes();
+    sticky->mutable_worker_task_queue()->set_name(sticky_queue_);
+    sticky->mutable_worker_task_queue()->set_kind(enums::TASK_QUEUE_KIND_STICKY);
+    sticky->mutable_worker_task_queue()->set_normal_name(task_queue_);
+    *sticky->mutable_schedule_to_start_timeout() = ToProtoDuration(std::chrono::seconds(10));
+  }
+  for (const auto& c : runner->commands()) {
     *req.add_commands() = c;
   }
-  if (runner.Completed()) {
+  if (runner->Completed()) {
     auto* c = req.add_commands();
     c->set_command_type(enums::COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION);
     auto* attr = c->mutable_complete_workflow_execution_command_attributes();
-    if (!runner.result().empty()) {
-      *attr->mutable_result() = ToProtoPayloads(runner.result());
+    if (!runner->result().empty()) {
+      *attr->mutable_result() = ToProtoPayloads(runner->result());
     }
-  } else if (runner.Failed()) {
+  } else if (runner->Failed()) {
     auto* c = req.add_commands();
     c->set_command_type(enums::COMMAND_TYPE_FAIL_WORKFLOW_EXECUTION);
-    *c->mutable_fail_workflow_execution_command_attributes()->mutable_failure() = runner.failure();
+    *c->mutable_fail_workflow_execution_command_attributes()->mutable_failure() = runner->failure();
   }
-  // Answer any queries attached to this workflow task against the live state.
   for (const auto& entry : task.queries()) {
     query::WorkflowQueryResult result;
     try {
-      if (runner.IsDone()) {
+      if (runner->IsDone()) {
         throw ApplicationError("cannot query a completed workflow", "QueryFailed");
       }
-      const Payloads answer = runner.RunQuery(entry.second.query_type(),
-                                              FromProtoPayloads(entry.second.query_args()));
+      const Payloads answer = runner->RunQuery(entry.second.query_type(),
+                                               FromProtoPayloads(entry.second.query_args()));
       result.set_result_type(enums::QUERY_RESULT_TYPE_ANSWERED);
       if (!answer.empty()) {
         *result.mutable_answer() = ToProtoPayloads(answer);
@@ -418,6 +556,12 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
     (*req.mutable_query_results())[entry.first] = result;
   }
   grpc_->RespondWorkflowTaskCompleted(req);
+
+  // Drop finished workflows from the cache.
+  if (runner->IsDone()) {
+    const std::lock_guard<std::mutex> lock(cache_mu_);
+    cache_.erase(run_id);
+  }
 }
 
 }  // namespace temporal::internal

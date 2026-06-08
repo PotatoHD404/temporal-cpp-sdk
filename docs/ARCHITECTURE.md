@@ -84,18 +84,35 @@ and the workflow thread never run concurrently; the state they share therefore n
 locking. This is the C++ analogue of the goroutine-based dispatcher the Go SDK uses.
 
 Awaiting an unresolved future or signal **yields** the coroutine — preserving the workflow's entire
-stack and locals — rather than unwinding it. The handler resolves every history-known result up
-front, so a single resume runs the workflow to its current suspension point; its live state then
-stays available for queries to read and for selectors to choose among. Execution is still
-**non-sticky**: the workflow is re-executed from full history each task and the coroutine is torn
-down at task end (teardown throws `CoroutineAbort` into the suspended frame to unwind it cleanly).
+stack and locals — rather than unwinding it. On a resume the workflow runs to its next suspension
+point; its live state then stays available for queries to read and for selectors to choose among.
+Teardown (cache eviction or completion) throws `CoroutineAbort` into the suspended frame to unwind
+it cleanly.
+
+## Sticky cache
+
+The handler keeps each running workflow's coroutine alive between tasks, keyed by run id
+(`src/internal/workflow_task_handler.cpp`). The worker advertises a unique **sticky task queue** in
+every `RespondWorkflowTaskCompleted` and polls it with a second poller, so the server delivers
+continuation tasks carrying only the **incremental** history:
+
+- **Continuation** (the task's first event id is `cached.last_event_id + 1`): apply just the new
+  events to the live futures/signal state (`ApplyEvents`) and `Resume` the cached coroutine — no
+  re-replay. Activity completions correlate to their future via a persistent
+  `scheduled_event_id → activity_id` map.
+- **Replay** (first task, or the history doesn't continue the cache): rebuild from full history via
+  the prescan path, run to the current suspension point, and cache the runner.
+- **Sticky-cache miss** (incremental history but nothing cached, e.g. after eviction): respond
+  `RESET_STICKY_TASK_QUEUE` so the server resends full history on the normal queue.
+
+Because `Block`/`Park` are written as re-checking loops, the same coroutine code serves both paths.
+`Worker::cache_hits()` / `replays()` expose how many tasks took each path.
 
 Consequences and current limits:
 - **User workflow code must not `catch (...)`** in a way that swallows `CoroutineAbort` (it is
   deliberately *not* derived from `std::exception`, so `catch (const std::exception&)` is safe).
-- **Re-execution is O(history) per task**, and a fresh coroutine (thread) is created per task. Fine
-  for short workflows; a sticky in-process cache that keeps the coroutine alive across tasks is the
-  roadmap efficiency upgrade.
+- The cache is currently **unbounded** (completed workflows are evicted; a bounded LRU is a small
+  follow-up — the reset path already handles eviction).
 - **No non-determinism detection** yet (comparing emitted commands against history). User code is
   trusted to be deterministic, as in every Temporal SDK.
 - Updates, child workflows, side effects, and versioning are not yet implemented (see

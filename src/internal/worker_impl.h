@@ -36,14 +36,18 @@ class WorkerImpl {
   void Run();
   void Stop();
 
+  long cache_hits() const { return workflow_handler_.cache_hits(); }
+  long replays() const { return workflow_handler_.replays(); }
+
  private:
-  void WorkflowPollLoop();
+  void WorkflowPollLoop(bool sticky);
   void ActivityPollLoop();
 
   std::shared_ptr<GrpcClient> grpc_;
   std::shared_ptr<DataConverter> converter_;
   std::shared_ptr<log::Logger> logger_;
   std::string task_queue_;
+  std::string sticky_queue_;  // per-worker sticky task queue (initialized before handlers)
   WorkerOptions options_;
   WorkflowTaskHandler workflow_handler_;
   ActivityTaskHandler activity_handler_;

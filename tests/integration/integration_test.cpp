@@ -124,6 +124,18 @@ std::string SelectorWorkflow(temporal::workflow::Context& ctx, int activity_ms, 
   return out;
 }
 
+// Runs N sequential activities. Under the sticky cache each activity completion
+// is a continuation (apply event + resume) rather than a full replay.
+int ChainWorkflow(temporal::workflow::Context& ctx, int n) {
+  temporal::ActivityOptions o;
+  o.start_to_close_timeout = 10s;
+  int value = 0;
+  for (int i = 0; i < n; ++i) {
+    value = ctx.ExecuteActivity<int>(o, "AddOne", value).Get();
+  }
+  return value;
+}
+
 // ---- harness -------------------------------------------------------------
 std::atomic<int> g_seq{0};
 
@@ -305,6 +317,23 @@ TEST_F(IntegrationTest, SelectorPicksTimeoutWhenActivityIsSlow) {
   o.task_queue = tq;
   auto handle = client_->StartWorkflow(o, "SelectorWorkflow", 3000, 500);  // 0.5s timer wins
   EXPECT_EQ(handle.Result<std::string>(), "timeout");
+  worker.Stop();
+}
+
+TEST_F(IntegrationTest, StickyCacheServesContinuations) {
+  const auto tq = UniqueTaskQueue("sticky-chain");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("ChainWorkflow", ChainWorkflow);
+  worker.RegisterActivity("AddOne", AddOneActivity);
+  worker.Start();
+
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "ChainWorkflow", 5);
+  EXPECT_EQ(handle.Result<int>(), 5);  // 0 -> +1 five times
+  // Several of those workflow tasks were served as sticky-cache continuations
+  // rather than full replays; if the sticky path were broken this would be 0.
+  EXPECT_GT(worker.cache_hits(), 0);
   worker.Stop();
 }
 

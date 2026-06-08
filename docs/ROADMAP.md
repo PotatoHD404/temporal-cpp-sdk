@@ -17,22 +17,21 @@ priority/dependency.
   (`workflow::Selector`, the "activity OR timeout" pattern).
 - Activities: typed execution, application-error failures.
 - Data conversion: Nil / ByteSlice / JSON (nlohmann).
-- Engine: non-sticky history replay, deterministic command/event correlation, and a stackful
-  **coroutine dispatcher** that keeps live workflow state across suspensions.
-- Tested: 18 unit tests + 12 end-to-end integration tests (timer, single + parallel activities,
+- Engine: a stackful **coroutine dispatcher** (live workflow state across suspensions) with a
+  **sticky cache** — running workflows stay in memory and continuation tasks apply only incremental
+  history (no full re-replay), falling back to full-history replay on a cache miss.
+- Tested: 18 unit tests + 13 end-to-end integration tests (timer, single + parallel activities,
   activity-failure propagation, RetryPolicy fail-fast, terminate, signal delivery + ordering,
-  observed cancellation, live-state query, selector activity-vs-timeout both directions) — run
-  against a dev server via `TEMPORAL_INTEGRATION=1`, and in CI.
+  observed cancellation, live-state query, selector activity-vs-timeout both directions, sticky-cache
+  continuations) — run against a dev server via `TEMPORAL_INTEGRATION=1`, and in CI.
 
-> Coverage caveat: integration tests prove the paths listed above. Replay is exercised for short
-> workflows only (non-sticky; the coroutine is torn down per task), and everything below is **not**
-> implemented.
+> Coverage caveat: integration tests prove the paths listed above. A bounded cache LRU and
+> non-determinism detection are not yet implemented, and everything below is **not** implemented.
 
 ## Phase 1 — robustness & determinism hardening
 
-- **Stickiness + in-process workflow cache** keyed by run id: keep the coroutine alive across tasks
-  on a sticky task queue + incremental history. The dispatcher already exists; this is the
-  efficiency upgrade (avoids re-running from full history and re-creating a thread per task).
+- **Bounded sticky-cache LRU**: the sticky cache exists and is keyed by run id, but is currently
+  unbounded (completed workflows are evicted); add a size cap + LRU eviction.
 - **Non-determinism detection**: compare emitted commands against replayed history; surface
   mismatches per `WorkflowPanicPolicy`.
 - History **pagination** (`next_page_token`) for long histories.

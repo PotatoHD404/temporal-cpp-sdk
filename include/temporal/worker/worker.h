@@ -64,6 +64,11 @@ class Worker {
   void Run();    // start pollers and block until SIGINT or Stop()
   void Stop();   // signal pollers to stop and join
 
+  // Observability: workflow tasks served as sticky-cache continuations vs. full
+  // replays since the worker started.
+  long cache_hits() const;
+  long replays() const;
+
  private:
   void RegisterWorkflowFn(std::string name, WorkflowFn fn);
   void RegisterActivityFn(std::string name, ActivityFn fn);
