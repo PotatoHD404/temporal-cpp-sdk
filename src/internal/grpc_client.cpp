@@ -113,6 +113,15 @@ wsv::RespondActivityTaskFailedResponse GrpcClient::RespondActivityTaskFailed(
       });
 }
 
+wsv::RecordActivityTaskHeartbeatResponse GrpcClient::RecordActivityTaskHeartbeat(
+    const wsv::RecordActivityTaskHeartbeatRequest& req) {
+  return UnaryCall<wsv::RecordActivityTaskHeartbeatResponse>(
+      "RecordActivityTaskHeartbeat", false,
+      [&](grpc::ClientContext* c, wsv::RecordActivityTaskHeartbeatResponse* p) {
+        return stub_->RecordActivityTaskHeartbeat(c, req, p);
+      });
+}
+
 wsv::SignalWorkflowExecutionResponse GrpcClient::SignalWorkflowExecution(
     const wsv::SignalWorkflowExecutionRequest& req) {
   return UnaryCall<wsv::SignalWorkflowExecutionResponse>(

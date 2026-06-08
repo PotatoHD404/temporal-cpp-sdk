@@ -178,7 +178,7 @@ Prescan ScanHistory(const hist::History& history) {
 // deterministically by call order so a later replay lines up with history.
 class WorkflowRunner final : public WorkflowOutbound {
  public:
-  enum class Status { Blocked, Completed, Failed };
+  enum class Status { Blocked, Completed, Failed, ContinueAsNew };
 
   WorkflowRunner(workflow::WorkflowInfo info, std::shared_ptr<log::Logger> logger, bool is_replaying,
                  Prescan scan, const DataConverter* converter, worker::WorkflowFn workflow_fn,
@@ -217,9 +217,11 @@ class WorkflowRunner final : public WorkflowOutbound {
 
   bool Completed() const { return status_ == Status::Completed; }
   bool Failed() const { return status_ == Status::Failed; }
+  bool IsContinueAsNew() const { return status_ == Status::ContinueAsNew; }
   bool IsDone() const { return coroutine_ && coroutine_->Done(); }
   const Payloads& result() const { return result_; }
   const tapi::failure::v1::Failure& failure() const { return failure_; }
+  const ContinueAsNewRequested& continue_as_new() const { return continue_as_new_; }
 
   // Invoke a registered query handler against the live (suspended) workflow state.
   Payloads RunQuery(const std::string& name, const Payloads& args) {
@@ -345,6 +347,9 @@ class WorkflowRunner final : public WorkflowOutbound {
     try {
       result_ = workflow_fn_(ctx, input_);
       status_ = Status::Completed;
+    } catch (const ContinueAsNewRequested& c) {
+      continue_as_new_ = c;
+      status_ = Status::ContinueAsNew;
     } catch (const ApplicationError& e) {
       failure_ = MakeApplicationFailure(e.what(), e.type());
       status_ = Status::Failed;
@@ -516,6 +521,7 @@ class WorkflowRunner final : public WorkflowOutbound {
   Status status_ = Status::Blocked;
   Payloads result_;
   tapi::failure::v1::Failure failure_;
+  ContinueAsNewRequested continue_as_new_;
   int activity_seq_ = 0;
   int timer_seq_ = 0;
   int child_seq_ = 0;
@@ -684,6 +690,14 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
     auto* c = req.add_commands();
     c->set_command_type(enums::COMMAND_TYPE_FAIL_WORKFLOW_EXECUTION);
     *c->mutable_fail_workflow_execution_command_attributes()->mutable_failure() = runner->failure();
+  } else if (runner->IsContinueAsNew()) {
+    auto* c = req.add_commands();
+    c->set_command_type(enums::COMMAND_TYPE_CONTINUE_AS_NEW_WORKFLOW_EXECUTION);
+    auto* attr = c->mutable_continue_as_new_workflow_execution_command_attributes();
+    attr->mutable_workflow_type()->set_name(runner->continue_as_new().workflow_type);
+    if (!runner->continue_as_new().input.empty()) {
+      *attr->mutable_input() = ToProtoPayloads(runner->continue_as_new().input);
+    }
   }
   for (const auto& entry : task.queries()) {
     query::WorkflowQueryResult result;

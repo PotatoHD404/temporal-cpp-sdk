@@ -37,6 +37,14 @@ struct FutureState {
 // Context wraps the user's typed handler into this shape).
 using QueryFn = std::function<Payloads(const Payloads& args)>;
 
+// Thrown by ctx.ContinueAsNew(...) to restart the workflow as a fresh run with
+// new input. Deliberately NOT derived from std::exception (so it isn't caught as
+// a failure); the workflow task handler catches it to emit the command.
+struct ContinueAsNewRequested {
+  std::string workflow_type;
+  Payloads input;
+};
+
 // Outbound surface a running workflow uses to emit commands and block. The
 // handler implements it; methods are non-templated to keep proto out of headers.
 class WorkflowOutbound {

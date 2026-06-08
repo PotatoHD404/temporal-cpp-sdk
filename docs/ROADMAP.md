@@ -15,17 +15,19 @@ priority/dependency.
 - Workflows: signals (`GetSignalChannel<T>().Receive()` / `ReceiveAsync`), cancellation
   (`IsCancelled()`), queries (`SetQueryHandler` + `WorkflowHandle::Query<R>`), selectors
   (`workflow::Selector`, "activity OR timeout"), **updates** (`SetUpdateHandler` +
-  `WorkflowHandle::Update<R>`), and **child workflows** (`ExecuteChildWorkflow<R>`).
-- Activities: typed execution, application-error failures.
+  `WorkflowHandle::Update<R>`), **child workflows** (`ExecuteChildWorkflow<R>`), and
+  **continue-as-new** (`ctx.ContinueAsNew`, client follows the run chain).
+- Activities: typed execution, application-error failures, **heartbeating**
+  (`activity::Context::RecordHeartbeat`).
 - Data conversion: Nil / ByteSlice / JSON (nlohmann).
 - Engine: a stackful **coroutine dispatcher** (live workflow state across suspensions) with a
   **sticky cache** — running workflows stay in memory and continuation tasks apply only incremental
   history (no full re-replay), falling back to full-history replay on a cache miss.
-- Tested: 18 unit tests + 15 end-to-end integration tests (timer, single + parallel activities,
+- Tested: 18 unit tests + 17 end-to-end integration tests (timer, single + parallel activities,
   activity-failure propagation, RetryPolicy fail-fast, terminate, signal delivery + ordering,
   observed cancellation, live-state query, selector activity-vs-timeout both directions, sticky-cache
-  continuations, child workflow, state-accumulating update) — run against a dev server via
-  `TEMPORAL_INTEGRATION=1`, and in CI.
+  continuations, child workflow, state-accumulating update, activity heartbeating, continue-as-new
+  chaining) — run against a dev server via `TEMPORAL_INTEGRATION=1`, and in CI.
 
 > Coverage caveat: integration tests prove the paths listed above. Update **validators** and
 > **replay re-application** of updates after a cache eviction are not yet implemented (the sticky
@@ -39,7 +41,8 @@ priority/dependency.
 - **Non-determinism detection**: compare emitted commands against replayed history; surface
   mismatches per `WorkflowPanicPolicy`.
 - History **pagination** (`next_page_token`) for long histories.
-- Heartbeating (`activity::Context::RecordHeartbeat`) wired to `RecordActivityTaskHeartbeat`.
+- **Heartbeat throttling** + acting on the server's `cancel_requested` heartbeat response (the call
+  is wired; throttling/cancel-detection are not).
 
 ## Phase 2 — workflow feature surface
 
@@ -48,7 +51,6 @@ priority/dependency.
 - Richer **cancellation scopes** (current cancellation is observe-only via `IsCancelled()`) and
   selector **channel cases** (the current `Selector` supports future cases).
 - **SideEffect / MutableSideEffect**, **`GetVersion`** versioning.
-- **ContinueAsNew**.
 - **Local activities**.
 
 ## Phase 3 — production concerns

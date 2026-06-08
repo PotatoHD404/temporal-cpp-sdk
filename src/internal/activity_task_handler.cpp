@@ -31,7 +31,18 @@ void ActivityTaskHandler::Handle(const wsv::PollActivityTaskQueueResponse& task)
   info.run_id = task.workflow_execution().run_id();
   info.task_queue = task_queue_;
   info.attempt = task.attempt();
-  activity::Context ctx(info, converter_.get());
+
+  auto heartbeat = [this, task_token = task.task_token()](const Payloads& details) {
+    wsv::RecordActivityTaskHeartbeatRequest req;
+    req.set_task_token(task_token);
+    req.set_namespace_(grpc_->ns());
+    req.set_identity(grpc_->identity());
+    if (!details.empty()) {
+      *req.mutable_details() = ToProtoPayloads(details);
+    }
+    grpc_->RecordActivityTaskHeartbeat(req);
+  };
+  activity::Context ctx(info, converter_.get(), heartbeat);
 
   const auto it = activities_.find(info.activity_type);
   if (it == activities_.end()) {

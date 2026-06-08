@@ -52,6 +52,11 @@ Payloads WorkflowHandle::ResultPayloads() {
             "workflow failed: " +
             ev.workflow_execution_failed_event_attributes().failure().message());
       }
+      if (ev.event_type() == enums::EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW) {
+        // Follow the continue-as-new chain to the next run.
+        run_id_ = ev.workflow_execution_continued_as_new_event_attributes().new_execution_run_id();
+        break;
+      }
       throw WorkflowFailedError("workflow did not complete successfully: " +
                                 std::string(enums::EventType_Name(ev.event_type())));
     }

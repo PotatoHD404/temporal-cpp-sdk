@@ -159,6 +159,32 @@ int UpdatableWorkflow(temporal::workflow::Context& ctx) {
   return total;
 }
 
+// Runs longer than its heartbeat timeout but heartbeats to stay alive.
+std::string HeartbeatActivity(temporal::activity::Context& ctx, int) {
+  for (int i = 0; i < 5; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    ctx.RecordHeartbeat(i);
+  }
+  return "alive";
+}
+
+std::string HeartbeatWorkflow(temporal::workflow::Context& ctx, int n) {
+  temporal::ActivityOptions o;
+  o.start_to_close_timeout = 30s;
+  o.heartbeat_timeout = 2s;  // shorter than the activity's ~2.5s runtime
+  o.retry_policy.maximum_attempts = 2;
+  o.retry_policy_set = true;
+  return ctx.ExecuteActivity<std::string>(o, "Heartbeat", n).Get();
+}
+
+// Counts down via continue-as-new until n reaches 0.
+int CountdownWorkflow(temporal::workflow::Context& ctx, int n) {
+  if (n <= 0) {
+    return 0;
+  }
+  ctx.ContinueAsNew("CountdownWorkflow", n - 1);
+}
+
 // ---- harness -------------------------------------------------------------
 std::atomic<int> g_seq{0};
 
@@ -395,6 +421,34 @@ TEST_F(IntegrationTest, UpdateMutatesStateAndReturnsResult) {
   EXPECT_EQ(handle.Update<int>("add", 5), 5);  // accumulates across updates
   EXPECT_EQ(handle.Update<int>("add", 3), 8);
   handle.Terminate("done");
+  worker.Stop();
+}
+
+TEST_F(IntegrationTest, ActivityHeartbeatKeepsActivityAlive) {
+  const auto tq = UniqueTaskQueue("heartbeat");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("HeartbeatWorkflow", HeartbeatWorkflow);
+  worker.RegisterActivity("Heartbeat", HeartbeatActivity);
+  worker.Start();
+
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "HeartbeatWorkflow", 0);
+  // Without heartbeating the activity would time out (2s) before finishing (~2.5s).
+  EXPECT_EQ(handle.Result<std::string>(), "alive");
+  worker.Stop();
+}
+
+TEST_F(IntegrationTest, ContinueAsNewChainsToCompletion) {
+  const auto tq = UniqueTaskQueue("continue");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("CountdownWorkflow", CountdownWorkflow);
+  worker.Start();
+
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "CountdownWorkflow", 3);
+  EXPECT_EQ(handle.Result<int>(), 0);  // client follows the continue-as-new chain
   worker.Stop();
 }
 

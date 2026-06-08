@@ -61,6 +61,13 @@ class Context {
   // Block the workflow for `duration` (NewTimer + Get).
   void Sleep(std::chrono::nanoseconds duration) { NewTimer(duration).Get(); }
 
+  // Restart the workflow as a fresh run with new input. Terminal: never returns.
+  template <class... Args>
+  [[noreturn]] void ContinueAsNew(std::string_view workflow_type, const Args&... args) {
+    throw internal::ContinueAsNewRequested{std::string(workflow_type),
+                                           converter_->ToPayloads(args...)};
+  }
+
   // Receive signals sent to this workflow under `name`. Mirrors the Go SDK's
   // `workflow.GetSignalChannel`.
   template <class T>

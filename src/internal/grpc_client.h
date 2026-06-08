@@ -37,6 +37,8 @@ class GrpcClient {
       const wsv::RespondActivityTaskCompletedRequest& req);
   wsv::RespondActivityTaskFailedResponse RespondActivityTaskFailed(
       const wsv::RespondActivityTaskFailedRequest& req);
+  wsv::RecordActivityTaskHeartbeatResponse RecordActivityTaskHeartbeat(
+      const wsv::RecordActivityTaskHeartbeatRequest& req);
   wsv::SignalWorkflowExecutionResponse SignalWorkflowExecution(
       const wsv::SignalWorkflowExecutionRequest& req);
   wsv::RequestCancelWorkflowExecutionResponse RequestCancelWorkflowExecution(
