@@ -90,6 +90,11 @@ class WorkflowOutbound {
   // future): emits RequestCancelExternalWorkflowExecution with child_workflow_only=false.
   virtual void CancelExternalWorkflow(std::string_view workflow_id) = 0;
 
+  // Signal an arbitrary external workflow by id (fire-and-forget): emits
+  // SignalExternalWorkflowExecution.
+  virtual void SignalExternalWorkflow(std::string_view workflow_id, std::string_view signal_name,
+                                      const Payloads& input) = 0;
+
   // Consume the next buffered signal for `name` into `out`, advancing a
   // deterministic per-name cursor; returns false if none remain this run.
   virtual bool TryConsumeSignal(std::string_view name, Payloads& out) = 0;

@@ -234,6 +234,14 @@ std::string CancelExternalWf(temporal::workflow::Context& ctx, std::string targe
   return "done";
 }
 
+// Signals an unrelated workflow by id (external signal), then completes. Stays
+// alive briefly so the signal is delivered before this workflow closes.
+std::string SignalExternalWf(temporal::workflow::Context& ctx, std::string target_id) {
+  ctx.SignalExternalWorkflow(target_id, "setName", std::string("World"));
+  ctx.Sleep(std::chrono::seconds(3));
+  return "done";
+}
+
 // Heartbeats until it observes a server cancel request, then returns "cancelled".
 std::string CancellableActivity(temporal::activity::Context& ctx, int) {
   for (int i = 0; i < 100; ++i) {
@@ -967,6 +975,24 @@ TEST_F(IntegrationTest, ExternalWorkflowCancellation) {
   auto canceller = client_->StartWorkflow(o, "CancelExternalWf", target.id());
   EXPECT_EQ(canceller.Result<std::string>(), "done");      // canceller emitted the cancel
   EXPECT_EQ(target.Result<std::string>(), "cancelled");    // target observed it
+  worker.Stop();
+}
+
+// One workflow signals another, unrelated workflow by id (external signal). The
+// target receives the "setName" signal and greets it.
+TEST_F(IntegrationTest, ExternalWorkflowSignal) {
+  const auto tq = UniqueTaskQueue("ext-signal");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("GreetBySignalWorkflow", GreetBySignalWorkflow);
+  worker.RegisterWorkflow("SignalExternalWf", SignalExternalWf);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto target = client_->StartWorkflow(o, "GreetBySignalWorkflow");
+  std::this_thread::sleep_for(1s);  // let the target start + park on the signal
+  auto signaller = client_->StartWorkflow(o, "SignalExternalWf", target.id());
+  EXPECT_EQ(signaller.Result<std::string>(), "done");          // signaller emitted the signal
+  EXPECT_EQ(target.Result<std::string>(), "Hello, World");     // target received it
   worker.Stop();
 }
 

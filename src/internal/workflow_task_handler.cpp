@@ -78,6 +78,7 @@ struct Prescan {
   std::unordered_map<std::string, ChildOutcome> children;       // keyed by child workflow_id
   std::unordered_map<std::string, std::vector<Payloads>> signals;  // keyed by signal name
   bool cancel_requested = false;
+  int ext_signals_initiated = 0;  // count of SignalExternalWorkflow commands in history
   // For incremental (sticky) continuations: correlate completion events to the
   // activity_id of their schedule, and remember how far history has been consumed.
   std::unordered_map<std::int64_t, std::string> sched_event_to_activity;
@@ -209,6 +210,13 @@ Prescan ScanHistory(const hist::History& history) {
         const std::string& wid = a.workflow_execution().workflow_id();
         ps.commands.push_back({CommandEvent::Kind::RequestCancelExternalWorkflow, wid, ""});
         ps.children[wid].cancel_requested = true;
+        break;
+      }
+      case enums::EVENT_TYPE_SIGNAL_EXTERNAL_WORKFLOW_EXECUTION_INITIATED: {
+        const auto& a = ev.signal_external_workflow_execution_initiated_event_attributes();
+        ps.commands.push_back(
+            {CommandEvent::Kind::SignalExternalWorkflow, a.workflow_execution().workflow_id(), ""});
+        ++ps.ext_signals_initiated;
         break;
       }
       case enums::EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_CANCELED: {
@@ -458,6 +466,17 @@ class WorkflowRunner final : public WorkflowOutbound {
     const auto it = scan_.children.find(id);
     if (!(it != scan_.children.end() && it->second.cancel_requested)) {
       EmitRequestCancelExternalWorkflow(id, /*child_only=*/false);
+    }
+  }
+
+  void SignalExternalWorkflow(std::string_view workflow_id, std::string_view signal_name,
+                              const Payloads& input) override {
+    // Fire-and-forget signal to another workflow by id. Emitted only for calls
+    // not already recorded in history (count-keyed, like SideEffect markers).
+    produced_commands_.push_back(
+        {CommandEvent::Kind::SignalExternalWorkflow, std::string(workflow_id), ""});
+    if (ext_signal_seq_++ >= static_cast<std::size_t>(scan_.ext_signals_initiated)) {
+      EmitSignalExternalWorkflow(workflow_id, signal_name, input);
     }
   }
 
@@ -846,6 +865,20 @@ class WorkflowRunner final : public WorkflowOutbound {
     commands_.push_back(std::move(c));
   }
 
+  void EmitSignalExternalWorkflow(std::string_view workflow_id, std::string_view signal_name,
+                                  const Payloads& input) {
+    cmd::Command c;
+    c.set_command_type(enums::COMMAND_TYPE_SIGNAL_EXTERNAL_WORKFLOW_EXECUTION);
+    auto* attr = c.mutable_signal_external_workflow_execution_command_attributes();
+    attr->set_namespace_(info_.ns);
+    attr->mutable_execution()->set_workflow_id(std::string(workflow_id));
+    attr->set_signal_name(std::string(signal_name));
+    if (!input.empty()) {
+      *attr->mutable_input() = ToProtoPayloads(input);
+    }
+    commands_.push_back(std::move(c));
+  }
+
   void EmitRecordMarker(const std::string& name,
                         const std::vector<std::pair<std::string, Payloads>>& details) {
     cmd::Command c;
@@ -883,6 +916,7 @@ class WorkflowRunner final : public WorkflowOutbound {
   int timer_seq_ = 0;
   int child_seq_ = 0;
   std::size_t side_effect_seq_ = 0;
+  std::size_t ext_signal_seq_ = 0;
   std::unordered_map<std::string, int> change_versions_;
   std::unique_ptr<Coroutine> coroutine_;  // declared last -> destroyed first (tears down thread)
 };

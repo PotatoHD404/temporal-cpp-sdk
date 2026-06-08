@@ -99,6 +99,14 @@ class Context {
     env_->CancelExternalWorkflow(workflow_id);
   }
 
+  // Signal another running workflow by id (fire-and-forget), encoding `args`
+  // through the data converter. Mirrors `workflow.SignalExternalWorkflow`.
+  template <class... Args>
+  void SignalExternalWorkflow(const std::string& workflow_id, std::string_view signal_name,
+                              const Args&... args) {
+    env_->SignalExternalWorkflow(workflow_id, signal_name, converter_->ToPayloads(args...));
+  }
+
   // Register a query handler `R Fn(Args...)`, à la `workflow.SetQueryHandler`.
   // Handlers must be read-only (no activities/timers): they run against live
   // workflow state when a query arrives. Re-registering replaces the handler.
