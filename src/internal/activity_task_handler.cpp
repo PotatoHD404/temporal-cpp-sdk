@@ -32,7 +32,7 @@ void ActivityTaskHandler::Handle(const wsv::PollActivityTaskQueueResponse& task)
   info.task_queue = task_queue_;
   info.attempt = task.attempt();
 
-  auto heartbeat = [this, task_token = task.task_token()](const Payloads& details) {
+  auto heartbeat = [this, task_token = task.task_token()](const Payloads& details) -> bool {
     wsv::RecordActivityTaskHeartbeatRequest req;
     req.set_task_token(task_token);
     req.set_namespace_(grpc_->ns());
@@ -40,7 +40,7 @@ void ActivityTaskHandler::Handle(const wsv::PollActivityTaskQueueResponse& task)
     if (!details.empty()) {
       *req.mutable_details() = ToProtoPayloads(details);
     }
-    grpc_->RecordActivityTaskHeartbeat(req);
+    return grpc_->RecordActivityTaskHeartbeat(req).cancel_requested();
   };
   activity::Context ctx(info, converter_.get(), heartbeat);
 

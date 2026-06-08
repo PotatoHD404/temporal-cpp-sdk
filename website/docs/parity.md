@@ -75,7 +75,7 @@ cache. This page is the honest accounting.
 | Typed execution | ✅ | |
 | Server-driven retries (`RetryPolicy`) | ✅ | |
 | Application errors (retryable / not) | ✅ | |
-| Heartbeating | ✅ | call wired; throttling/cancel-detection ❌ |
+| Heartbeating | ✅ | `Context::IsCancelled` observes the server's cancel; throttling ❌ |
 | Async (manual) completion | ❌ | |
 | Activity-side cancellation | ❌ | |
 
@@ -119,7 +119,8 @@ cache. This page is the honest accounting.
 Rough priority order (see the repo's `docs/ROADMAP.md` for detail):
 
 1. **Determinism hardening** — ✅ non-determinism detection + bounded sticky-cache LRU
-   (`max_cached_workflows`); remaining: history pagination, heartbeat throttling + cancel detection.
+   (`max_cached_workflows`) + heartbeat cancel-detection (`activity::Context::IsCancelled`);
+   remaining: history pagination, heartbeat throttling.
 2. **Workflow feature surface** — ✅ `SideEffect` + `GetVersion` + update validators + timer
    cancellation (`Future::Cancel`); remaining: activity/child cancel + propagation, selector channel
    cases, MutableSideEffect, local activities.

@@ -26,8 +26,10 @@ struct ActivityInfo {
 // their first parameter.
 class Context {
  public:
+  // `heartbeat` reports to the server and returns whether the server has asked
+  // this activity to cancel.
   Context(ActivityInfo info, const DataConverter* converter,
-          std::function<void(const Payloads&)> heartbeat = {})
+          std::function<bool(const Payloads&)> heartbeat = {})
       : info_(std::move(info)), converter_(converter), heartbeat_(std::move(heartbeat)) {}
 
   const ActivityInfo& GetInfo() const { return info_; }
@@ -40,14 +42,21 @@ class Context {
   template <class... Args>
   void RecordHeartbeat(const Args&... details) {
     if (heartbeat_) {
-      heartbeat_(converter_->ToPayloads(details...));
+      cancel_requested_ = heartbeat_(converter_->ToPayloads(details...));
     }
   }
+
+  // True once the server has requested this activity cancel, as observed by the
+  // most recent RecordHeartbeat (cancellation is delivered through heartbeats, so
+  // only a heartbeating activity can see it). A long-running activity should poll
+  // this and return promptly when it becomes true.
+  bool IsCancelled() const { return cancel_requested_; }
 
  private:
   ActivityInfo info_;
   const DataConverter* converter_;
-  std::function<void(const Payloads&)> heartbeat_;
+  std::function<bool(const Payloads&)> heartbeat_;
+  bool cancel_requested_ = false;
 };
 
 }  // namespace activity
