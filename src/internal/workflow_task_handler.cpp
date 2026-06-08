@@ -528,6 +528,55 @@ class WorkflowRunner final : public WorkflowOutbound {
   std::unique_ptr<Coroutine> coroutine_;  // declared last -> destroyed first (tears down thread)
 };
 
+// Page in a running workflow's full history and replay it into a fresh runner so
+// a query can be answered when we have no cached state for the run. A query must
+// be answered from complete state, never from a partial-history rebuild (which
+// would observe a workflow that never received its signals). Returns nullptr if
+// the history could not be fetched. The runner is transient: callers must not
+// cache it (a query must not populate the sticky cache).
+std::shared_ptr<WorkflowRunner> BuildRunnerForQuery(GrpcClient* grpc,
+                                                    const std::shared_ptr<log::Logger>& logger,
+                                                    const DataConverter* converter,
+                                                    const workflow::WorkflowInfo& info,
+                                                    const worker::WorkflowFn& fn) {
+  hist::History full;
+  std::string page_token;
+  for (;;) {
+    wsv::GetWorkflowExecutionHistoryRequest req;
+    req.set_namespace_(grpc->ns());
+    req.mutable_execution()->set_workflow_id(info.workflow_id);
+    if (!info.run_id.empty()) {
+      req.mutable_execution()->set_run_id(info.run_id);
+    }
+    req.set_skip_archival(true);
+    if (!page_token.empty()) {
+      req.set_next_page_token(page_token);
+    }
+    wsv::GetWorkflowExecutionHistoryResponse resp;
+    try {
+      resp = grpc->GetWorkflowExecutionHistory(req);
+    } catch (const std::exception& e) {
+      logger->Error("failed to fetch history to answer query",
+                    {log::F("workflow_id", info.workflow_id), log::F("error", e.what())});
+      return nullptr;
+    }
+    for (const auto& ev : resp.history().events()) {
+      *full.add_events() = ev;
+    }
+    page_token = resp.next_page_token();
+    if (page_token.empty()) {
+      break;
+    }
+  }
+
+  Prescan scan = ScanHistory(full);
+  Payloads input = scan.input;
+  auto runner = std::make_shared<WorkflowRunner>(info, logger, /*is_replaying=*/true, std::move(scan),
+                                                 converter, fn, std::move(input));
+  runner->Run();
+  return runner;
+}
+
 }  // namespace
 
 WorkflowTaskHandler::WorkflowTaskHandler(GrpcClient* grpc, std::shared_ptr<DataConverter> converter,
@@ -566,27 +615,47 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
   const std::string& run_id = info.run_id;
   const auto& events = task.history().events();
   const std::int64_t first_event_id = events.empty() ? 0 : events.Get(0).event_id();
+  // "Full history" begins at the WorkflowExecutionStarted event. Anything else
+  // (empty, or starting mid-stream) is a sticky continuation or a sticky query
+  // task, both of which the server delivers expecting us to hold cached state.
+  const bool is_full_history =
+      !events.empty() &&
+      events.Get(0).event_type() == enums::EVENT_TYPE_WORKFLOW_EXECUTION_STARTED;
+  const bool is_query_task = task.has_query();
 
   // Sticky cache: continue a cached coroutine if this task's history picks up
-  // exactly where we left off; otherwise (re)play from full history.
+  // exactly where we left off, or answer a query against the resident state.
   std::shared_ptr<WorkflowRunner> runner;
-  {
+  bool cache_hit = false;
+  if (!is_full_history) {
     const std::lock_guard<std::mutex> lock(cache_mu_);
     const auto it = cache_.find(run_id);
     if (it != cache_.end()) {
       auto cached = std::static_pointer_cast<WorkflowRunner>(it->second);
-      if (first_event_id == cached->last_event_id() + 1) {
+      // A sticky query carries no new history and is answered from the resident
+      // state as-is; a normal continuation must resume exactly at our checkpoint.
+      if (is_query_task || first_event_id == cached->last_event_id() + 1) {
         runner = std::move(cached);
+        cache_hit = true;
       }
     }
   }
 
-  if (runner) {
+  if (cache_hit) {
     cache_hits_.fetch_add(1, std::memory_order_relaxed);
-    runner->ApplyAndResume(task.history());
-  } else if (first_event_id > 1) {
-    // Incremental history with nothing to continue (sticky-cache miss): ask the
-    // server to resend full history on the normal queue.
+    // A query observes current state without advancing the workflow; a normal
+    // continuation applies its new events and resumes the parked coroutine.
+    if (!is_query_task) {
+      runner->ApplyAndResume(task.history());
+    }
+  } else if (is_query_task) {
+    // Query for a run we don't have cached: page in full history and rebuild
+    // transient state to answer it (never cached). Null if the fetch failed,
+    // which surfaces as a failed query below.
+    runner = BuildRunnerForQuery(grpc_, logger_, converter_.get(), info, wf->second);
+  } else if (!is_full_history) {
+    // Sticky-cache miss on a normal continuation: ask the server to resend full
+    // history on the normal queue.
     wsv::RespondWorkflowTaskFailedRequest req;
     req.set_task_token(task.task_token());
     req.set_identity(grpc_->identity());
@@ -601,8 +670,11 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
     runner = std::make_shared<WorkflowRunner>(info, logger_, is_replaying, std::move(scan),
                                               converter_.get(), wf->second, std::move(input));
     runner->Run();
-    const std::lock_guard<std::mutex> lock(cache_mu_);
-    cache_[run_id] = runner;
+    // Don't cache a context built solely to answer a (full-history) query.
+    if (!is_query_task) {
+      const std::lock_guard<std::mutex> lock(cache_mu_);
+      cache_[run_id] = runner;
+    }
   }
 
   // A legacy direct-query task carries a single `query` and no new commands.
@@ -610,6 +682,9 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
     wsv::RespondQueryTaskCompletedRequest qreq;
     qreq.set_task_token(task.task_token());
     try {
+      if (!runner) {
+        throw ApplicationError("could not load workflow state to answer query", "QueryFailed");
+      }
       if (runner->IsDone()) {
         throw ApplicationError("cannot query a completed workflow", "QueryFailed");
       }
