@@ -996,4 +996,36 @@ TEST_F(IntegrationTest, ExternalWorkflowSignal) {
   worker.Stop();
 }
 
+// A start-time search attribute is indexed and found by a visibility query.
+TEST_F(IntegrationTest, StartTimeSearchAttributeIsQueryable) {
+  // The SDK has no operator API, so register the custom attribute via the CLI
+  // (idempotent); give it a moment to propagate before first use.
+  std::system("temporal operator search-attribute create --name ItestKeyword --type Keyword "
+              ">/dev/null 2>&1");
+  std::this_thread::sleep_for(1s);
+  const auto tq = UniqueTaskQueue("sa");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("SleepWorkflow", SleepWorkflow);
+  worker.Start();
+  const std::string val = "sa-" + std::to_string(std::random_device{}());
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  o.search_attributes["ItestKeyword"] = temporal::sa::Keyword(val);
+  auto handle = client_->StartWorkflow(o, "SleepWorkflow", 0);
+  EXPECT_EQ(handle.Result<std::string>(), "slept");
+
+  const std::string query = "ItestKeyword = '" + val + "'";
+  std::vector<temporal::client::WorkflowDescription> listed;
+  for (int i = 0; i < 40; ++i) {  // visibility is eventually consistent
+    listed = client_->ListWorkflows(query);
+    if (!listed.empty()) {
+      break;
+    }
+    std::this_thread::sleep_for(250ms);
+  }
+  ASSERT_EQ(listed.size(), 1U);
+  EXPECT_EQ(listed[0].run_id, handle.run_id());
+  worker.Stop();
+}
+
 }  // namespace

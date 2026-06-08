@@ -46,6 +46,10 @@ struct StartWorkflowOptions {
   // Non-indexed metadata attached to the workflow, returned by Describe. Build
   // values with the data converter, e.g. `o.memo["owner"] = dc->ToPayload("me")`.
   std::map<std::string, Payload> memo;
+  // Indexed search attributes for visibility queries. Build typed values with the
+  // `temporal::sa::` helpers, e.g. `o.search_attributes["Tier"] = sa::Keyword("gold")`.
+  // The named attribute must be registered on the namespace.
+  std::map<std::string, Payload> search_attributes;
 };
 
 // Options for `workflow::Context::ExecuteActivity`.

@@ -65,7 +65,7 @@ cache. This page is the honest accounting.
 | SideEffect / MutableSideEffect | 🟡 | `SideEffect` ✅ (marker record/replay); MutableSideEffect ❌ |
 | Local activities | ❌ | |
 | External-workflow signal/cancel | ✅ | `CancelExternalWorkflow` + `SignalExternalWorkflow` |
-| Search attributes / memo / upsert | 🟡 | memo ✅ (start + `Describe`); search attributes / upsert ❌ |
+| Search attributes / memo / upsert | 🟡 | memo ✅; start-time search attributes ✅ (`sa::` typed helpers); workflow upsert ❌ |
 | Header / context propagation | ❌ | |
 
 ## Activities

@@ -6,6 +6,7 @@
 #include <temporal/common/errors.h>
 #include <temporal/common/options.h>
 #include <temporal/common/payload.h>
+#include <temporal/common/search_attribute.h>
 #include <temporal/converter/data_converter.h>
 #include <temporal/log/logger.h>
 #include <temporal/worker/worker.h>
