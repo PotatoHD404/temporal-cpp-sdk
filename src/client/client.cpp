@@ -376,6 +376,76 @@ void Client::DeleteSchedule(const std::string& schedule_id) {
   grpc_->DeleteSchedule(req);
 }
 
+void Client::UpdateSchedule(const std::string& schedule_id, const ScheduleOptions& options) {
+  internal::wsv::UpdateScheduleRequest req;
+  req.set_namespace_(ns_);
+  req.set_schedule_id(schedule_id);
+  req.set_identity(identity_);
+  req.set_request_id(internal::NewUuid());
+  auto* schedule = req.mutable_schedule();
+  if (options.interval.count() > 0) {
+    *schedule->mutable_spec()->add_interval()->mutable_interval() =
+        internal::ToProtoDuration(options.interval);
+  }
+  auto* start = schedule->mutable_action()->mutable_start_workflow();
+  start->set_workflow_id(options.workflow_id.empty() ? schedule_id + "-workflow"
+                                                     : options.workflow_id);
+  start->mutable_workflow_type()->set_name(options.workflow_type);
+  start->mutable_task_queue()->set_name(options.task_queue);
+  grpc_->UpdateSchedule(req);
+}
+
+void Client::TriggerSchedule(const std::string& schedule_id) {
+  internal::wsv::PatchScheduleRequest req;
+  req.set_namespace_(ns_);
+  req.set_schedule_id(schedule_id);
+  req.set_identity(identity_);
+  req.set_request_id(internal::NewUuid());
+  req.mutable_patch()->mutable_trigger_immediately();
+  grpc_->PatchSchedule(req);
+}
+
+void Client::PauseSchedule(const std::string& schedule_id, const std::string& note) {
+  internal::wsv::PatchScheduleRequest req;
+  req.set_namespace_(ns_);
+  req.set_schedule_id(schedule_id);
+  req.set_identity(identity_);
+  req.set_request_id(internal::NewUuid());
+  req.mutable_patch()->set_pause(note.empty() ? "paused" : note);
+  grpc_->PatchSchedule(req);
+}
+
+void Client::UnpauseSchedule(const std::string& schedule_id, const std::string& note) {
+  internal::wsv::PatchScheduleRequest req;
+  req.set_namespace_(ns_);
+  req.set_schedule_id(schedule_id);
+  req.set_identity(identity_);
+  req.set_request_id(internal::NewUuid());
+  req.mutable_patch()->set_unpause(note.empty() ? "unpaused" : note);
+  grpc_->PatchSchedule(req);
+}
+
+std::vector<std::string> Client::ListSchedules() {
+  std::vector<std::string> out;
+  std::string page_token;
+  for (;;) {
+    internal::wsv::ListSchedulesRequest req;
+    req.set_namespace_(ns_);
+    if (!page_token.empty()) {
+      req.set_next_page_token(page_token);
+    }
+    const auto resp = grpc_->ListSchedules(req);
+    for (const auto& entry : resp.schedules()) {
+      out.push_back(entry.schedule_id());
+    }
+    page_token = resp.next_page_token();
+    if (page_token.empty()) {
+      break;
+    }
+  }
+  return out;
+}
+
 void Client::CompleteActivityPayloads(const std::string& task_token, const Payloads& result) {
   internal::wsv::RespondActivityTaskCompletedRequest req;
   req.set_namespace_(ns_);

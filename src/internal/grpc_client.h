@@ -37,6 +37,9 @@ class GrpcClient {
   wsv::CreateScheduleResponse CreateSchedule(const wsv::CreateScheduleRequest& req);
   wsv::DescribeScheduleResponse DescribeSchedule(const wsv::DescribeScheduleRequest& req);
   wsv::DeleteScheduleResponse DeleteSchedule(const wsv::DeleteScheduleRequest& req);
+  wsv::UpdateScheduleResponse UpdateSchedule(const wsv::UpdateScheduleRequest& req);
+  wsv::PatchScheduleResponse PatchSchedule(const wsv::PatchScheduleRequest& req);
+  wsv::ListSchedulesResponse ListSchedules(const wsv::ListSchedulesRequest& req);
   wsv::GetWorkflowExecutionHistoryResponse GetWorkflowExecutionHistory(
       const wsv::GetWorkflowExecutionHistoryRequest& req);
   wsv::PollWorkflowTaskQueueResponse PollWorkflowTaskQueue(

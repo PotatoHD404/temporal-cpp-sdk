@@ -128,6 +128,27 @@ wsv::DeleteScheduleResponse GrpcClient::DeleteSchedule(const wsv::DeleteSchedule
       });
 }
 
+wsv::UpdateScheduleResponse GrpcClient::UpdateSchedule(const wsv::UpdateScheduleRequest& req) {
+  return UnaryCall<wsv::UpdateScheduleResponse>(
+      "UpdateSchedule", false, [&](grpc::ClientContext* c, wsv::UpdateScheduleResponse* p) {
+        return stub_->UpdateSchedule(c, req, p);
+      });
+}
+
+wsv::PatchScheduleResponse GrpcClient::PatchSchedule(const wsv::PatchScheduleRequest& req) {
+  return UnaryCall<wsv::PatchScheduleResponse>(
+      "PatchSchedule", false, [&](grpc::ClientContext* c, wsv::PatchScheduleResponse* p) {
+        return stub_->PatchSchedule(c, req, p);
+      });
+}
+
+wsv::ListSchedulesResponse GrpcClient::ListSchedules(const wsv::ListSchedulesRequest& req) {
+  return UnaryCall<wsv::ListSchedulesResponse>(
+      "ListSchedules", false, [&](grpc::ClientContext* c, wsv::ListSchedulesResponse* p) {
+        return stub_->ListSchedules(c, req, p);
+      });
+}
+
 wsv::GetWorkflowExecutionHistoryResponse GrpcClient::GetWorkflowExecutionHistory(
     const wsv::GetWorkflowExecutionHistoryRequest& req) {
   return UnaryCall<wsv::GetWorkflowExecutionHistoryResponse>(

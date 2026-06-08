@@ -139,6 +139,14 @@ class Client {
   // Returns whether the schedule exists; throws on errors other than not-found.
   bool DescribeSchedule(const std::string& schedule_id);
   void DeleteSchedule(const std::string& schedule_id);
+  // Replace an existing schedule's spec/action.
+  void UpdateSchedule(const std::string& schedule_id, const ScheduleOptions& options);
+  // Run a scheduled action immediately, regardless of the spec.
+  void TriggerSchedule(const std::string& schedule_id);
+  void PauseSchedule(const std::string& schedule_id, const std::string& note = "");
+  void UnpauseSchedule(const std::string& schedule_id, const std::string& note = "");
+  // All schedule ids in the namespace (pages through results).
+  std::vector<std::string> ListSchedules();
 
   // Complete or fail an activity that deferred completion via
   // activity::Context::SetWillCompleteAsync(), identified by its task token

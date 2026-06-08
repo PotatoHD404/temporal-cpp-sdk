@@ -30,7 +30,7 @@ cache. This page is the honest accounting.
 | Signal-with-start | ✅ | `Client::SignalWithStartWorkflow` |
 | List / count / describe workflows | ✅ | `Describe`, `ListWorkflows`, `CountWorkflows` (visibility query) |
 | Reset / batch operations | ❌ | |
-| Schedules client | 🟡 | create / describe / delete (interval + start-workflow); update/list/trigger/pause ❌ |
+| Schedules client | ✅ | create / describe / delete / update / list / trigger / pause / unpause (interval spec) |
 | Operator & Cloud services | ❌ | |
 
 ## Worker
@@ -111,7 +111,7 @@ cache. This page is the honest accounting.
 | Tracing / OpenTelemetry | ❌ | |
 | Structured logging | ✅ | pluggable `log::Logger` |
 | Test framework (time-skip, replayer) | 🟡 | replayer ✅ (`Worker::ReplayWorkflowHistory`); time-skip ❌ |
-| Schedules | 🟡 | create / describe / delete via the client |
+| Schedules | ✅ | full client lifecycle (create/describe/delete/update/list/trigger/pause); calendar/cron specs ❌ |
 | Nexus operations | ❌ | |
 
 ## Roadmap {#roadmap}
@@ -126,8 +126,8 @@ Rough priority order (see the repo's `docs/ROADMAP.md` for detail):
    MutableSideEffect, local activities.
 3. **Production concerns** — TLS/mTLS + API-key auth, interceptors, metrics & tracing,
    proto/protoJSON converters + payload codecs, worker tuning.
-4. **Breadth** — ✅ replay/test framework + 🟡 schedules (create/describe/delete); remaining: fuller
-   schedules (update/list/trigger/pause), Nexus, worker versioning, the broader client surface.
+4. **Breadth** — ✅ replay/test framework + ✅ schedules (full client lifecycle); remaining: Nexus,
+   worker versioning, calendar/cron schedule specs, the broader client surface.
 
 If a capability you need is in the ❌ column, it genuinely isn't there yet — please don't assume
 otherwise from the working core.

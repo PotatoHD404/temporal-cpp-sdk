@@ -933,6 +933,38 @@ TEST_F(IntegrationTest, ScheduleCreateDescribeDelete) {
   EXPECT_NO_THROW(client_->DeleteSchedule(schedule_id));
 }
 
+// The fuller schedule lifecycle: list finds it, and update/pause/unpause/trigger
+// all succeed.
+TEST_F(IntegrationTest, ScheduleUpdateListTriggerPause) {
+  const std::string sid = UniqueTaskQueue("schedule2");
+  temporal::ScheduleOptions opts;
+  opts.interval = std::chrono::hours(1);  // long -> never auto-fires during the test
+  opts.workflow_type = "EchoWorkflow";
+  opts.task_queue = sid + "-tq";
+  client_->CreateSchedule(sid, opts);
+
+  bool found = false;
+  for (int i = 0; i < 20 && !found; ++i) {  // listing is eventually consistent
+    for (const auto& id : client_->ListSchedules()) {
+      if (id == sid) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      std::this_thread::sleep_for(250ms);
+    }
+  }
+  EXPECT_TRUE(found);
+
+  EXPECT_NO_THROW(client_->PauseSchedule(sid, "test"));
+  EXPECT_NO_THROW(client_->UnpauseSchedule(sid));
+  opts.interval = std::chrono::hours(2);
+  EXPECT_NO_THROW(client_->UpdateSchedule(sid, opts));
+  EXPECT_NO_THROW(client_->TriggerSchedule(sid));
+  EXPECT_NO_THROW(client_->DeleteSchedule(sid));
+}
+
 // ListWorkflows + CountWorkflows query the visibility store. Two runs of a
 // unique workflow type are started; a WorkflowType filter then finds exactly
 // those two (visibility is eventually consistent, so we poll briefly).
