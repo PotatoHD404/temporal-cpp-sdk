@@ -50,6 +50,14 @@ class Context {
     return Future<void>(env_->StartTimer(duration), converter_, env_);
   }
 
+  // Start a child workflow by type name; returns a Future for its typed result.
+  template <class R, class... Args>
+  Future<R> ExecuteChildWorkflow(const ChildWorkflowOptions& options, std::string_view workflow_type,
+                                 const Args&... args) {
+    Payloads input = converter_->ToPayloads(args...);
+    return Future<R>(env_->StartChildWorkflow(workflow_type, input, options), converter_, env_);
+  }
+
   // Block the workflow for `duration` (NewTimer + Get).
   void Sleep(std::chrono::nanoseconds duration) { NewTimer(duration).Get(); }
 

@@ -54,6 +54,10 @@ class WorkflowOutbound {
 
   virtual std::shared_ptr<FutureState> StartTimer(std::chrono::nanoseconds duration) = 0;
 
+  virtual std::shared_ptr<FutureState> StartChildWorkflow(std::string_view workflow_type,
+                                                          const Payloads& input,
+                                                          const ChildWorkflowOptions& options) = 0;
+
   // Suspend the workflow until `state` is ready (cooperatively yields the
   // dispatcher coroutine; returns once ready, or unwinds on teardown).
   virtual void Block(const std::shared_ptr<FutureState>& state) = 0;

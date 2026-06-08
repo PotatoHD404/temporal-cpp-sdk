@@ -51,10 +51,21 @@ struct TimerOutcome {
   bool fired = false;
 };
 
+// Outcome of a child workflow, keyed by the (parent-assigned) child workflow_id.
+struct ChildOutcome {
+  bool initiated = false;
+  bool resolved = false;
+  bool failed = false;
+  Payloads result;
+  std::string failure_type;
+  std::string failure_message;
+};
+
 struct Prescan {
   Payloads input;
   std::unordered_map<std::string, ActivityOutcome> activities;  // keyed by activity_id
   std::unordered_map<std::string, TimerOutcome> timers;         // keyed by timer_id
+  std::unordered_map<std::string, ChildOutcome> children;       // keyed by child workflow_id
   std::unordered_map<std::string, std::vector<Payloads>> signals;  // keyed by signal name
   bool cancel_requested = false;
   // For incremental (sticky) continuations: correlate completion events to the
@@ -120,6 +131,26 @@ Prescan ScanHistory(const hist::History& history) {
       case enums::EVENT_TYPE_TIMER_FIRED:
         ps.timers[ev.timer_fired_event_attributes().timer_id()].fired = true;
         break;
+      case enums::EVENT_TYPE_START_CHILD_WORKFLOW_EXECUTION_INITIATED:
+        ps.children[ev.start_child_workflow_execution_initiated_event_attributes().workflow_id()]
+            .initiated = true;
+        break;
+      case enums::EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED: {
+        const auto& a = ev.child_workflow_execution_completed_event_attributes();
+        auto& o = ps.children[a.workflow_execution().workflow_id()];
+        o.resolved = true;
+        o.result = FromProtoPayloads(a.result());
+        break;
+      }
+      case enums::EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_FAILED: {
+        const auto& a = ev.child_workflow_execution_failed_event_attributes();
+        auto& o = ps.children[a.workflow_execution().workflow_id()];
+        o.resolved = true;
+        o.failed = true;
+        o.failure_message = a.failure().message();
+        o.failure_type = a.failure().application_failure_info().type();
+        break;
+      }
       case enums::EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED: {
         const auto& a = ev.workflow_execution_signaled_event_attributes();
         ps.signals[a.signal_name()].push_back(FromProtoPayloads(a.input()));
@@ -230,6 +261,29 @@ class WorkflowRunner final : public WorkflowOutbound {
     return state;
   }
 
+  std::shared_ptr<FutureState> StartChildWorkflow(std::string_view workflow_type,
+                                                  const Payloads& input,
+                                                  const ChildWorkflowOptions& options) override {
+    const std::string auto_id = info_.workflow_id + "_c" + std::to_string(child_seq_++);
+    const std::string id = options.id.empty() ? auto_id : options.id;
+    auto state = std::make_shared<FutureState>();
+    const auto it = scan_.children.find(id);
+    if (it != scan_.children.end() && it->second.initiated) {
+      const ChildOutcome& o = it->second;
+      if (o.resolved) {
+        state->ready = true;
+        state->failed = o.failed;
+        state->result = o.result;
+        state->failure_type = o.failure_type;
+        state->failure_message = o.failure_message;
+      }
+    } else {
+      EmitStartChildWorkflow(id, workflow_type, input, options);
+    }
+    child_futures_[id] = state;
+    return state;
+  }
+
   void Block(const std::shared_ptr<FutureState>& state) override {
     while (!state->ready) {
       coroutine_->Yield();
@@ -335,6 +389,26 @@ class WorkflowRunner final : public WorkflowOutbound {
           }
           break;
         }
+        case enums::EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED: {
+          const auto& a = ev.child_workflow_execution_completed_event_attributes();
+          const auto it = child_futures_.find(a.workflow_execution().workflow_id());
+          if (it != child_futures_.end()) {
+            it->second->ready = true;
+            it->second->result = FromProtoPayloads(a.result());
+          }
+          break;
+        }
+        case enums::EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_FAILED: {
+          const auto& a = ev.child_workflow_execution_failed_event_attributes();
+          const auto it = child_futures_.find(a.workflow_execution().workflow_id());
+          if (it != child_futures_.end()) {
+            it->second->ready = true;
+            it->second->failed = true;
+            it->second->failure_message = a.failure().message();
+            it->second->failure_type = a.failure().application_failure_info().type();
+          }
+          break;
+        }
         case enums::EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED: {
           const auto& a = ev.workflow_execution_signaled_event_attributes();
           scan_.signals[a.signal_name()].push_back(FromProtoPayloads(a.input()));
@@ -391,6 +465,22 @@ class WorkflowRunner final : public WorkflowOutbound {
     commands_.push_back(std::move(c));
   }
 
+  void EmitStartChildWorkflow(const std::string& id, std::string_view workflow_type,
+                              const Payloads& input, const ChildWorkflowOptions& options) {
+    cmd::Command c;
+    c.set_command_type(enums::COMMAND_TYPE_START_CHILD_WORKFLOW_EXECUTION);
+    auto* attr = c.mutable_start_child_workflow_execution_command_attributes();
+    attr->set_namespace_(info_.ns);
+    attr->set_workflow_id(id);
+    attr->mutable_workflow_type()->set_name(std::string(workflow_type));
+    attr->mutable_task_queue()->set_name(options.task_queue.empty() ? info_.task_queue
+                                                                     : options.task_queue);
+    if (!input.empty()) {
+      *attr->mutable_input() = ToProtoPayloads(input);
+    }
+    commands_.push_back(std::move(c));
+  }
+
   workflow::WorkflowInfo info_;
   std::shared_ptr<log::Logger> logger_;
   bool is_replaying_;
@@ -402,12 +492,14 @@ class WorkflowRunner final : public WorkflowOutbound {
   std::unordered_map<std::string, QueryFn> query_handlers_;
   std::unordered_map<std::string, std::shared_ptr<FutureState>> activity_futures_;  // by activity_id
   std::unordered_map<std::string, std::shared_ptr<FutureState>> timer_futures_;     // by timer_id
+  std::unordered_map<std::string, std::shared_ptr<FutureState>> child_futures_;     // by child wf id
   std::vector<cmd::Command> commands_;
   Status status_ = Status::Blocked;
   Payloads result_;
   tapi::failure::v1::Failure failure_;
   int activity_seq_ = 0;
   int timer_seq_ = 0;
+  int child_seq_ = 0;
   std::unique_ptr<Coroutine> coroutine_;  // declared last -> destroyed first (tears down thread)
 };
 

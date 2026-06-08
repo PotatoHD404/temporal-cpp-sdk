@@ -136,6 +136,17 @@ int ChainWorkflow(temporal::workflow::Context& ctx, int n) {
   return value;
 }
 
+std::string GreetChildWorkflow(temporal::workflow::Context&, std::string name) {
+  return "child:" + name;
+}
+
+// Runs a child workflow on the same task queue and returns its result.
+std::string ParentWorkflow(temporal::workflow::Context& ctx, std::string name) {
+  temporal::ChildWorkflowOptions o;
+  o.task_queue = ctx.GetInfo().task_queue;
+  return ctx.ExecuteChildWorkflow<std::string>(o, "GreetChildWorkflow", name).Get();
+}
+
 // ---- harness -------------------------------------------------------------
 std::atomic<int> g_seq{0};
 
@@ -334,6 +345,20 @@ TEST_F(IntegrationTest, StickyCacheServesContinuations) {
   // Several of those workflow tasks were served as sticky-cache continuations
   // rather than full replays; if the sticky path were broken this would be 0.
   EXPECT_GT(worker.cache_hits(), 0);
+  worker.Stop();
+}
+
+TEST_F(IntegrationTest, ChildWorkflowReturnsResultToParent) {
+  const auto tq = UniqueTaskQueue("child");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("ParentWorkflow", ParentWorkflow);
+  worker.RegisterWorkflow("GreetChildWorkflow", GreetChildWorkflow);
+  worker.Start();
+
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "ParentWorkflow", std::string("World"));
+  EXPECT_EQ(handle.Result<std::string>(), "child:World");
   worker.Stop();
 }
 

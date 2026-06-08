@@ -40,6 +40,15 @@ class FakeEnv : public internal::WorkflowOutbound {
     return st;
   }
 
+  std::shared_ptr<internal::FutureState> StartChildWorkflow(std::string_view, const Payloads&,
+                                                           const ChildWorkflowOptions&) override {
+    ++children;
+    auto st = std::make_shared<internal::FutureState>();
+    st->ready = ready;
+    st->result = result;
+    return st;
+  }
+
   void Block(const std::shared_ptr<internal::FutureState>& st) override {
     if (!st->ready) {
       throw FakeSuspend{};
@@ -66,6 +75,7 @@ class FakeEnv : public internal::WorkflowOutbound {
 
   int scheduled = 0;
   int timers = 0;
+  int children = 0;
   bool ready = false;
   Payloads result;
   workflow::WorkflowInfo info;

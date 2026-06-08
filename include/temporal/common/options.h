@@ -53,6 +53,12 @@ struct ActivityOptions {
   bool retry_policy_set = false;
 };
 
+// Options for `workflow::Context::ExecuteChildWorkflow`.
+struct ChildWorkflowOptions {
+  std::string id;          // default: "<parent id>_c<seq>"
+  std::string task_queue;  // default: the parent's task queue
+};
+
 // Options for a Worker.
 struct WorkerOptions {
   int max_concurrent_activities = 0;      // 0 => library default
