@@ -7,3 +7,6 @@
 [submodule "third_party/reference/sdk-python"]
 	path = third_party/reference/sdk-python
 	url = https://github.com/temporalio/sdk-python
+[submodule "third_party/reference/sdk-core"]
+	path = third_party/reference/sdk-core
+	url = https://github.com/temporalio/sdk-core
