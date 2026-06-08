@@ -1,9 +1,12 @@
 #pragma once
 
 #include <chrono>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <temporal/common/payload.h>
 
 namespace temporal {
 
@@ -40,6 +43,9 @@ struct StartWorkflowOptions {
   std::chrono::milliseconds task_timeout{0};
   RetryPolicy retry_policy;
   bool retry_policy_set = false;
+  // Non-indexed metadata attached to the workflow, returned by Describe. Build
+  // values with the data converter, e.g. `o.memo["owner"] = dc->ToPayload("me")`.
+  std::map<std::string, Payload> memo;
 };
 
 // Options for `workflow::Context::ExecuteActivity`.

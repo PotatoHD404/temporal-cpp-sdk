@@ -50,6 +50,15 @@ wsv::StartWorkflowExecutionResponse GrpcClient::StartWorkflowExecution(
       });
 }
 
+wsv::DescribeWorkflowExecutionResponse GrpcClient::DescribeWorkflowExecution(
+    const wsv::DescribeWorkflowExecutionRequest& req) {
+  return UnaryCall<wsv::DescribeWorkflowExecutionResponse>(
+      "DescribeWorkflowExecution", false,
+      [&](grpc::ClientContext* c, wsv::DescribeWorkflowExecutionResponse* p) {
+        return stub_->DescribeWorkflowExecution(c, req, p);
+      });
+}
+
 wsv::GetWorkflowExecutionHistoryResponse GrpcClient::GetWorkflowExecutionHistory(
     const wsv::GetWorkflowExecutionHistoryRequest& req) {
   return UnaryCall<wsv::GetWorkflowExecutionHistoryResponse>(

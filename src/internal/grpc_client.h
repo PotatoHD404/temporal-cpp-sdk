@@ -23,6 +23,8 @@ class GrpcClient {
 
   wsv::StartWorkflowExecutionResponse StartWorkflowExecution(
       const wsv::StartWorkflowExecutionRequest& req);
+  wsv::DescribeWorkflowExecutionResponse DescribeWorkflowExecution(
+      const wsv::DescribeWorkflowExecutionRequest& req);
   wsv::GetWorkflowExecutionHistoryResponse GetWorkflowExecutionHistory(
       const wsv::GetWorkflowExecutionHistoryRequest& req);
   wsv::PollWorkflowTaskQueueResponse PollWorkflowTaskQueue(

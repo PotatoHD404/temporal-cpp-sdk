@@ -28,7 +28,7 @@ cache. This page is the honest accounting.
 | Cancel / Terminate | ✅ | |
 | Get handle to existing run | ✅ | |
 | Signal-with-start | ❌ | |
-| List / count / describe workflows | ❌ | |
+| List / count / describe workflows | 🟡 | `Describe` ✅ (status + memo); list/count ❌ |
 | Reset / batch operations | ❌ | |
 | Schedules client | ❌ | create/update/delete/list/trigger/pause |
 | Operator & Cloud services | ❌ | |
@@ -65,7 +65,7 @@ cache. This page is the honest accounting.
 | SideEffect / MutableSideEffect | 🟡 | `SideEffect` ✅ (marker record/replay); MutableSideEffect ❌ |
 | Local activities | ❌ | |
 | External-workflow signal/cancel | ❌ | |
-| Search attributes / memo / upsert | ❌ | |
+| Search attributes / memo / upsert | 🟡 | memo ✅ (start + `Describe`); search attributes / upsert ❌ |
 | Header / context propagation | ❌ | |
 
 ## Activities

@@ -690,4 +690,27 @@ TEST_F(IntegrationTest, TimerCancellationCompletesFastAndReplays) {
   EXPECT_NO_THROW(replayer.ReplayWorkflowHistory(history_json));
 }
 
+// Memo set at start is returned verbatim by Describe, along with the run status.
+TEST_F(IntegrationTest, MemoIsAttachedAndReturnedByDescribe) {
+  const auto tq = UniqueTaskQueue("memo");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("LongSleepWorkflow", LongSleepWorkflow);
+  worker.Start();
+  const auto dc = temporal::DataConverter::Default();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  o.memo["owner"] = dc->ToPayload(std::string("alice"));
+  o.memo["priority"] = dc->ToPayload(7);
+  auto handle = client_->StartWorkflow(o, "LongSleepWorkflow", 0);
+
+  const auto desc = handle.Describe();
+  EXPECT_EQ(desc.status, "RUNNING");
+  ASSERT_EQ(desc.memo.count("owner"), 1U);
+  EXPECT_EQ(dc->FromPayload<std::string>(desc.memo.at("owner")), "alice");
+  EXPECT_EQ(dc->FromPayload<int>(desc.memo.at("priority")), 7);
+
+  handle.Terminate("done");
+  worker.Stop();
+}
+
 }  // namespace

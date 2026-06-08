@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -17,6 +18,14 @@ class GrpcClient;
 }
 
 namespace client {
+
+// A snapshot of a workflow execution, returned by WorkflowHandle::Describe.
+struct WorkflowDescription {
+  std::string workflow_id;
+  std::string run_id;
+  std::string status;  // e.g. "Running", "Completed", "Failed", "Terminated"
+  std::map<std::string, Payload> memo;
+};
 
 // Handle to a started (or looked-up) workflow execution.
 class WorkflowHandle {
@@ -71,6 +80,9 @@ class WorkflowHandle {
   // Fetch this workflow's full history as Temporal JSON (pages internally). Feed
   // it to Worker::ReplayWorkflowHistory to test a workflow against real history.
   std::string FetchHistoryJson();
+
+  // Fetch a point-in-time snapshot (status + memo) of this workflow execution.
+  WorkflowDescription Describe();
 
  private:
   Payloads ResultPayloads();  // non-template; defined in client.cpp

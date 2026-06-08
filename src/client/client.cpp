@@ -7,6 +7,7 @@
 #include "google/protobuf/util/json_util.h"
 #include "temporal/api/enums/v1/event_type.pb.h"
 #include "temporal/api/enums/v1/update.pb.h"
+#include "temporal/api/enums/v1/workflow.pb.h"
 #include "temporal/api/history/v1/message.pb.h"
 #include "temporal/api/query/v1/message.pb.h"
 #include "temporal/api/update/v1/message.pb.h"
@@ -56,6 +57,30 @@ std::string WorkflowHandle::FetchHistoryJson() {
   std::string json;
   static_cast<void>(google::protobuf::util::MessageToJsonString(full, &json));
   return json;
+}
+
+WorkflowDescription WorkflowHandle::Describe() {
+  internal::wsv::DescribeWorkflowExecutionRequest req;
+  req.set_namespace_(ns_);
+  req.mutable_execution()->set_workflow_id(workflow_id_);
+  if (!run_id_.empty()) {
+    req.mutable_execution()->set_run_id(run_id_);
+  }
+  const auto resp = grpc_->DescribeWorkflowExecution(req);
+  const auto& info = resp.workflow_execution_info();
+  WorkflowDescription out;
+  out.workflow_id = info.execution().workflow_id();
+  out.run_id = info.execution().run_id();
+  std::string status = ::temporal::api::enums::v1::WorkflowExecutionStatus_Name(info.status());
+  const std::string prefix = "WORKFLOW_EXECUTION_STATUS_";
+  if (status.starts_with(prefix)) {
+    status = status.substr(prefix.size());
+  }
+  out.status = std::move(status);
+  for (const auto& [key, value] : info.memo().fields()) {
+    out.memo[key] = internal::FromProtoPayload(value);
+  }
+  return out;
 }
 
 Payloads WorkflowHandle::ResultPayloads() {
@@ -213,6 +238,9 @@ WorkflowHandle Client::StartWorkflowPayloads(const StartWorkflowOptions& options
   }
   if (options.retry_policy_set) {
     *req.mutable_retry_policy() = internal::ToProtoRetryPolicy(options.retry_policy);
+  }
+  for (const auto& [key, value] : options.memo) {
+    (*req.mutable_memo()->mutable_fields())[key] = internal::ToProtoPayload(value);
   }
 
   const auto resp = grpc_->StartWorkflowExecution(req);
