@@ -37,6 +37,31 @@ class PayloadConverter {
   virtual bool FromPayload(const Payload& p, nlohmann::json& out) const = 0;
 };
 
+// Transforms an already-converted payload on its way to/from the server — e.g.
+// compression or encryption "at rest". Applied after the PayloadConverter on
+// encode, and before it on decode. Mirrors the Go SDK's converter.PayloadCodec.
+// Both peers must share the same codec chain.
+class PayloadCodec {
+ public:
+  PayloadCodec() = default;
+  virtual ~PayloadCodec() = default;
+  PayloadCodec(const PayloadCodec&) = delete;
+  PayloadCodec& operator=(const PayloadCodec&) = delete;
+  PayloadCodec(PayloadCodec&&) = delete;
+  PayloadCodec& operator=(PayloadCodec&&) = delete;
+
+  virtual Payload Encode(const Payload& payload) const = 0;
+  virtual Payload Decode(const Payload& payload) const = 0;
+};
+
+// Reference codec: base64-encodes the payload bytes (a stand-in demonstrating the
+// extension point — real deployments plug in compression/encryption here).
+class Base64PayloadCodec : public PayloadCodec {
+ public:
+  Payload Encode(const Payload& payload) const override;
+  Payload Decode(const Payload& payload) const override;
+};
+
 namespace detail {
 // Detects a protobuf-generated message via its own member functions, so this
 // header never has to include the protobuf runtime. Proto values then encode as
@@ -62,6 +87,10 @@ class DataConverter {
   // Shared process-wide default instance.
   static std::shared_ptr<DataConverter> Default();
 
+  // The default converter stack wrapped in a codec chain (applied to every
+  // payload). Set the result on ClientOptions::data_converter.
+  static std::shared_ptr<DataConverter> WithCodecs(std::vector<std::shared_ptr<PayloadCodec>> codecs);
+
   Payload ToPayloadJson(const nlohmann::json& value) const;
   nlohmann::json FromPayloadJson(const Payload& payload) const;
 
@@ -72,26 +101,29 @@ class DataConverter {
 
   template <class T>
   Payload ToPayload(const T& value) const {
+    Payload p;
     if constexpr (detail::is_proto_message<T>::value) {
-      return ToProtoPayload(value.SerializeAsString(), std::string(value.GetTypeName()));
+      p = ToProtoPayload(value.SerializeAsString(), std::string(value.GetTypeName()));
     } else if constexpr (std::is_same_v<std::decay_t<T>, nlohmann::json>) {
-      return ToPayloadJson(value);
+      p = ToPayloadJson(value);
     } else {
-      return ToPayloadJson(nlohmann::json(value));
+      p = ToPayloadJson(nlohmann::json(value));
     }
+    return ApplyCodecsEncode(std::move(p));
   }
 
   template <class T>
   T FromPayload(const Payload& payload) const {
+    const Payload decoded = ApplyCodecsDecode(payload);
     if constexpr (detail::is_proto_message<T>::value) {
       T msg;
-      if (!msg.ParseFromString(ProtoBytes(payload))) {
+      if (!msg.ParseFromString(ProtoBytes(decoded))) {
         throw DataConverterError("failed to parse protobuf payload as " +
                                  std::string(msg.GetTypeName()));
       }
       return msg;
     } else {
-      nlohmann::json j = FromPayloadJson(payload);
+      nlohmann::json j = FromPayloadJson(decoded);
       if constexpr (std::is_same_v<T, nlohmann::json>) {
         return j;
       } else {
@@ -109,7 +141,12 @@ class DataConverter {
   }
 
  private:
+  // Apply the codec chain in order on encode, reverse on decode (no-op if empty).
+  Payload ApplyCodecsEncode(Payload payload) const;
+  Payload ApplyCodecsDecode(Payload payload) const;
+
   std::vector<std::shared_ptr<PayloadConverter>> converters_;
+  std::vector<std::shared_ptr<PayloadCodec>> codecs_;
 };
 
 }  // namespace temporal

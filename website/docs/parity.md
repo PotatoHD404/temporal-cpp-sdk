@@ -86,7 +86,7 @@ cache. This page is the honest accounting.
 | JSON / nil / bytes converters | ✅ | nlohmann-json default stack |
 | Custom converters | ✅ | |
 | Proto / ProtoJSON converters | 🟡 | binary protobuf ✅ (seamless typed `ToPayload`/`FromPayload`); ProtoJSON ❌ |
-| Payload codecs (encryption/compression) | ❌ | |
+| Payload codecs (encryption/compression) | 🟡 | `PayloadCodec` interface + chain applied to every payload + base64 reference codec; no bundled encryption/compression codec |
 | Custom failure converter | ❌ | |
 | Large-payload / external storage | ❌ | |
 

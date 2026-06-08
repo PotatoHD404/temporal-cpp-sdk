@@ -127,4 +127,95 @@ std::string DataConverter::ProtoBytes(const Payload& payload) const {
   return payload.data;
 }
 
+namespace {
+
+constexpr const char* kB64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string Base64Encode(const std::string& in) {
+  std::string out;
+  out.reserve(((in.size() + 2) / 3) * 4);
+  int val = 0;
+  int bits = -6;
+  for (const unsigned char c : in) {
+    val = (val << 8) + c;
+    bits += 8;
+    while (bits >= 0) {
+      out.push_back(kB64[(val >> bits) & 0x3F]);
+      bits -= 6;
+    }
+  }
+  if (bits > -6) {
+    out.push_back(kB64[((val << 8) >> (bits + 8)) & 0x3F]);
+  }
+  while (out.size() % 4 != 0) {
+    out.push_back('=');
+  }
+  return out;
+}
+
+std::string Base64Decode(const std::string& in) {
+  std::vector<int> rev(256, -1);
+  for (int i = 0; i < 64; ++i) {
+    rev[static_cast<unsigned char>(kB64[i])] = i;
+  }
+  std::string out;
+  int val = 0;
+  int bits = -8;
+  for (const unsigned char c : in) {
+    if (rev[c] == -1) {
+      break;  // padding '=' or non-alphabet
+    }
+    val = (val << 6) + rev[c];
+    bits += 6;
+    if (bits >= 0) {
+      out.push_back(static_cast<char>((val >> bits) & 0xFF));
+      bits -= 8;
+    }
+  }
+  return out;
+}
+
+constexpr const char* kCodecKey = "codec";
+
+}  // namespace
+
+Payload Base64PayloadCodec::Encode(const Payload& payload) const {
+  Payload out = payload;  // preserve all inner metadata (encoding, type, …)
+  out.data = Base64Encode(payload.data);
+  out.metadata[kCodecKey] = "base64";
+  return out;
+}
+
+Payload Base64PayloadCodec::Decode(const Payload& payload) const {
+  const auto it = payload.metadata.find(kCodecKey);
+  if (it == payload.metadata.end() || it->second != "base64") {
+    return payload;  // not encoded by this codec
+  }
+  Payload out = payload;
+  out.data = Base64Decode(payload.data);
+  out.metadata.erase(kCodecKey);
+  return out;
+}
+
+Payload DataConverter::ApplyCodecsEncode(Payload payload) const {
+  for (const auto& codec : codecs_) {
+    payload = codec->Encode(payload);
+  }
+  return payload;
+}
+
+Payload DataConverter::ApplyCodecsDecode(Payload payload) const {
+  for (auto it = codecs_.rbegin(); it != codecs_.rend(); ++it) {
+    payload = (*it)->Decode(payload);
+  }
+  return payload;
+}
+
+std::shared_ptr<DataConverter> DataConverter::WithCodecs(
+    std::vector<std::shared_ptr<PayloadCodec>> codecs) {
+  auto dc = std::make_shared<DataConverter>();
+  dc->codecs_ = std::move(codecs);
+  return dc;
+}
+
 }  // namespace temporal
