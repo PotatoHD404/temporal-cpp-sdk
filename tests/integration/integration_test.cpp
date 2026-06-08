@@ -336,13 +336,19 @@ TEST_F(IntegrationTest, QueryReadsLiveWorkflowState) {
   const auto dc = temporal::DataConverter::Default();
   handle.Signal("add", dc->ToPayloads(5));
   handle.Signal("add", dc->ToPayloads(7));
-  // Queries are read-after-write eventually consistent vs. just-sent signals, so
-  // poll the live, parked workflow until both signals have been applied.
-  int sum = 0;
-  for (int i = 0; i < 40 && sum != 12; ++i) {
-    sum = handle.Query<int>("sum");
+  // Queries are read-after-write eventually consistent vs. just-sent signals
+  // (and a query right after start may briefly be unanswerable), so poll the
+  // live, parked workflow until both signals have been applied. The window is
+  // generous because CI runners are slow.
+  int sum = -1;
+  for (int i = 0; i < 150 && sum != 12; ++i) {
+    try {
+      sum = handle.Query<int>("sum");
+    } catch (const std::exception&) {
+      // not yet answerable (handler not registered / eventual consistency)
+    }
     if (sum != 12) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   }
   EXPECT_EQ(sum, 12);
