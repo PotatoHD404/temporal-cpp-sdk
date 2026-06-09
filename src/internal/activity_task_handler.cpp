@@ -9,8 +9,27 @@
 
 #include <temporal/activity/activity.h>
 #include <temporal/common/errors.h>
+#include <temporal/interceptor/interceptor.h>
 
 namespace temporal::internal {
+namespace {
+
+// Terminal activity-inbound interceptor: runs the real registered activity fn.
+// The interceptor chain wraps this; with no interceptors it is the head and the
+// activity runs directly (no overhead).
+class RootActivityInbound : public interceptor::ActivityInboundInterceptor {
+ public:
+  explicit RootActivityInbound(const worker::ActivityFn& fn) : fn_(fn) {}
+  Payloads ExecuteActivity(activity::Context& ctx, interceptor::ExecuteActivityInput& in,
+                           const interceptor::Header& /*header*/) override {
+    return fn_(ctx, in.args);
+  }
+
+ private:
+  const worker::ActivityFn& fn_;
+};
+
+}  // namespace
 
 ActivityTaskHandler::ActivityTaskHandler(GrpcClient* grpc, std::shared_ptr<DataConverter> converter,
                                          std::shared_ptr<log::Logger> logger, std::string task_queue)
@@ -61,7 +80,17 @@ void ActivityTaskHandler::Handle(const wsv::PollActivityTaskQueueResponse& task)
 
   const Payloads input = FromProtoPayloads(task.input());
   try {
-    const Payloads result = it->second(ctx, input);
+    // Run the activity through the inbound interceptor chain (terminal = real fn).
+    RootActivityInbound root(it->second);
+    std::vector<interceptor::Interceptor*> factories;
+    factories.reserve(interceptors_.size());
+    for (const auto& i : interceptors_) {
+      factories.push_back(i.get());
+    }
+    auto chain = interceptor::BuildActivityInboundChain(factories, &root);
+    interceptor::ExecuteActivityInput in{input};
+    interceptor::Header header(info.headers);  // inbound propagation context
+    const Payloads result = chain.head()->ExecuteActivity(ctx, in, header);
     if (ctx.WillCompleteAsync()) {
       return;  // left open; completed out-of-band via Client::CompleteActivity/FailActivity
     }

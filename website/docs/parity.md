@@ -111,7 +111,7 @@ cache. This page is the honest accounting.
 | Capability | Status | Notes |
 |---|---|---|
 | TLS / mTLS / API-key auth | 🟡 | implemented (`ClientOptions::tls` + `api_key`, SslCredentials + per-call auth); **e2e-unverified locally** — no TLS Temporal server in the harness |
-| Interceptors (client + worker) | 🟡 | chain framework (workflow/activity/client inbound+outbound) + base no-ops, unit-tested; not yet wired into live call paths |
+| Interceptors (client + worker) | 🟡 | framework + **activity-inbound wiring live & e2e-verified** (`WorkerOptions::interceptors`); client-outbound + workflow-inbound wiring pending |
 | Metrics | 🟡 | `MetricsHandler` (counter/gauge/timer): task counters + execution-latency timers + in-flight gauge + poll success/timeout counters; e2e-verified; not the full Go metric set |
 | Tracing / OpenTelemetry | 🟡 | `Tracer`/`Span` interface + `TracingInterceptor` (inject/extract via headers), unit-tested; no OTel exporter bundled; not yet wired |
 | Structured logging | ✅ | pluggable `log::Logger` |

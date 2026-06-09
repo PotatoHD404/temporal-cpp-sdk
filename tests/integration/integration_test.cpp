@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <temporal/interceptor/interceptor.h>
 #include <temporal/temporal.h>
 
 namespace {
@@ -1680,6 +1681,53 @@ TEST_F(IntegrationTest, ListClustersIncludesActiveCluster) {
     }
   }
   EXPECT_TRUE(found_active);
+}
+
+// ===========================================================================
+// Wave-5 parity additions: interceptor wiring (activity-inbound).
+// ===========================================================================
+
+std::atomic<int> g_intercepted_activities{0};
+
+// An activity-inbound interceptor that records each wrapped execution, then runs
+// the real activity via the next link.
+class RecordingActivityInbound : public temporal::interceptor::ActivityInboundInterceptor {
+ public:
+  explicit RecordingActivityInbound(temporal::interceptor::ActivityInboundInterceptor* next)
+      : temporal::interceptor::ActivityInboundInterceptor(next) {}
+  temporal::Payloads ExecuteActivity(temporal::activity::Context& ctx,
+                                     temporal::interceptor::ExecuteActivityInput& in,
+                                     const temporal::interceptor::Header& header) override {
+    ++g_intercepted_activities;
+    return next_->ExecuteActivity(ctx, in, header);
+  }
+};
+
+class RecordingInterceptor : public temporal::interceptor::Interceptor {
+ public:
+  std::unique_ptr<temporal::interceptor::ActivityInboundInterceptor> InterceptActivity(
+      temporal::interceptor::ActivityInboundInterceptor* next) override {
+    return std::make_unique<RecordingActivityInbound>(next);
+  }
+};
+
+// POSITIVE: an activity-inbound interceptor (installed via WorkerOptions) wraps
+// the real activity execution.
+TEST_F(IntegrationTest, ActivityInboundInterceptorWrapsExecution) {
+  const auto tq = UniqueTaskQueue("interceptor");
+  g_intercepted_activities = 0;
+  temporal::WorkerOptions wo;
+  wo.interceptors.push_back(std::make_shared<RecordingInterceptor>());
+  temporal::worker::Worker worker(*client_, tq, wo);
+  worker.RegisterWorkflow("EchoWorkflow", EchoWorkflow);
+  worker.RegisterActivity("Echo", EchoActivity);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h = client_->StartWorkflow(o, "EchoWorkflow", std::string("hi"));
+  EXPECT_EQ(h.Result<std::string>(), "hi");
+  EXPECT_GT(g_intercepted_activities.load(), 0);  // the Echo activity was intercepted
+  worker.Stop();
 }
 
 }  // namespace

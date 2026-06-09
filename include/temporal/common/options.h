@@ -15,6 +15,9 @@ namespace log {
 class Logger;
 }
 class DataConverter;
+namespace interceptor {
+class Interceptor;  // forward-declared; full type in <temporal/interceptor/interceptor.h>
+}  // namespace interceptor
 
 // Retry behavior for activities (and, where supported, workflows). Mirrors
 // `temporal.api.common.v1.RetryPolicy`. Zero fields fall back to server defaults.
@@ -46,6 +49,8 @@ struct ClientOptions {
   std::shared_ptr<DataConverter> data_converter;  // default: JSON converter
   TlsConfig tls;        // disabled by default (insecure channel)
   std::string api_key;  // sent as an "Authorization: Bearer <key>" header per RPC
+  // Client-outbound interceptors, applied in order (front = outermost).
+  std::vector<std::shared_ptr<interceptor::Interceptor>> interceptors;
 };
 
 // Options for `Client::StartWorkflow`.
@@ -136,6 +141,9 @@ struct WorkerOptions {
   int max_cached_workflows = 0;
   // Optional metrics sink; nullptr disables metric emission.
   std::shared_ptr<MetricsHandler> metrics_handler;
+  // Worker interceptors (activity-inbound is wired; workflow-inbound pending),
+  // applied in order (front = outermost).
+  std::vector<std::shared_ptr<interceptor::Interceptor>> interceptors;
 
   // Caps how many activity / workflow tasks may execute concurrently across all
   // pollers (each poller blocks before dispatching once the cap is reached).

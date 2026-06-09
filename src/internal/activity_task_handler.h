@@ -3,12 +3,17 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "temporal/api/workflowservice/v1/request_response.pb.h"
 
 #include <temporal/converter/data_converter.h>
 #include <temporal/log/logger.h>
 #include <temporal/worker/worker.h>
+
+namespace temporal::interceptor {
+class Interceptor;  // full type in <temporal/interceptor/interceptor.h> (included in the .cpp)
+}  // namespace temporal::interceptor
 
 namespace temporal::internal {
 
@@ -34,12 +39,18 @@ class ActivityTaskHandler {
 
   void Handle(const wsv::PollActivityTaskQueueResponse& task);
 
+  // Install activity-inbound interceptors (set by the worker from WorkerOptions).
+  void SetInterceptors(std::vector<std::shared_ptr<interceptor::Interceptor>> interceptors) {
+    interceptors_ = std::move(interceptors);
+  }
+
  private:
   GrpcClient* grpc_;
   std::shared_ptr<DataConverter> converter_;
   std::shared_ptr<log::Logger> logger_;
   std::string task_queue_;
   std::unordered_map<std::string, worker::ActivityFn> activities_;
+  std::vector<std::shared_ptr<interceptor::Interceptor>> interceptors_;
 };
 
 }  // namespace temporal::internal
