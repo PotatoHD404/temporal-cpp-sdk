@@ -111,7 +111,8 @@ void ActivityTaskHandler::Handle(const wsv::PollActivityTaskQueueResponse& task)
     if (const auto& fc = converter_->failure_converter()) {
       fc->ErrorToFailure(e, *req.mutable_failure());  // custom failure encoding
     } else {
-      *req.mutable_failure() = MakeApplicationFailure(e.what(), e.type());
+      // Carry non_retryable so the server stops retrying a non-retryable error.
+      *req.mutable_failure() = MakeApplicationFailure(e.what(), e.type(), e.non_retryable());
     }
     grpc_->RespondActivityTaskFailed(req);
   } catch (const std::exception& e) {

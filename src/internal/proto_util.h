@@ -26,9 +26,10 @@ gpb::Duration ToProtoDuration(std::chrono::nanoseconds d);
 tapi::common::v1::RetryPolicy ToProtoRetryPolicy(const RetryPolicy& policy);
 
 // Build a Failure carrying an ApplicationFailureInfo (the shape activity/workflow
-// application errors take on the wire).
-tapi::failure::v1::Failure MakeApplicationFailure(const std::string& message,
-                                                  const std::string& type);
+// application errors take on the wire). `non_retryable` marks the failure so the
+// server stops retrying the activity (mirrors ApplicationError::non_retryable()).
+tapi::failure::v1::Failure MakeApplicationFailure(const std::string& message, const std::string& type,
+                                                  bool non_retryable = false);
 
 // "<pid>@<hostname>", the default worker/client identity.
 std::string DefaultIdentity();

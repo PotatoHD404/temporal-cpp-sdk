@@ -18,6 +18,8 @@
 
 #include "temporal/api/failure/v1/message.pb.h"
 
+#include "integration_fixture.h"  // IntegrationTest, UniqueTaskQueue, g_seq
+
 namespace {
 
 using namespace std::chrono_literals;
@@ -403,27 +405,6 @@ int MarkerWorkflow(temporal::workflow::Context& ctx) {
 }
 
 // ---- harness -------------------------------------------------------------
-std::atomic<int> g_seq{0};
-
-std::string UniqueTaskQueue(const std::string& base) {
-  return "itest-" + base + "-" + std::to_string(g_seq.fetch_add(1));
-}
-
-class IntegrationTest : public ::testing::Test {
- protected:
-  void SetUp() override {
-    if (std::getenv("TEMPORAL_INTEGRATION") == nullptr) {
-      GTEST_SKIP() << "set TEMPORAL_INTEGRATION=1 and run `temporal server start-dev` to enable";
-    }
-    const char* addr = std::getenv("TEMPORAL_ADDRESS");
-    temporal::ClientOptions opt;
-    opt.target = (addr != nullptr) ? addr : "localhost:7233";
-    client_ = std::make_unique<temporal::client::Client>(temporal::client::Client::Connect(opt));
-  }
-
-  std::unique_ptr<temporal::client::Client> client_;
-};
-
 TEST_F(IntegrationTest, TimerWorkflowCompletes) {
   const auto tq = UniqueTaskQueue("timer");
   temporal::worker::Worker worker(*client_, tq);

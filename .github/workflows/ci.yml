@@ -48,7 +48,13 @@ jobs:
 
       - name: Start Temporal dev server
         run: |
-          temporal server start-dev --headless --log-level error &
+          # Worker-versioning v0.2 (build-id "data" + assignment/redirect "rules")
+          # is disabled by default on the dev server's namespace; the build-id and
+          # versioning-rule integration tests RPC straight to those (deprecated)
+          # APIs and otherwise fail with "... is disabled on this namespace".
+          temporal server start-dev --headless --log-level error \
+            --dynamic-config-value frontend.workerVersioningDataAPIs=true \
+            --dynamic-config-value frontend.workerVersioningRuleAPIs=true &
           echo $! > /tmp/temporal.pid
           for i in $(seq 1 60); do
             temporal workflow list >/dev/null 2>&1 && break

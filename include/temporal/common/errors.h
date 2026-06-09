@@ -56,7 +56,15 @@ class DataConverterError : public TemporalError {
 // Raised for transport/RPC failures talking to the Temporal service.
 class RpcError : public TemporalError {
  public:
-  using TemporalError::TemporalError;
+  explicit RpcError(const std::string& message, bool not_found = false)
+      : TemporalError(message), not_found_(not_found) {}
+
+  // True when the server returned NOT_FOUND (e.g. an unknown workflow / schedule
+  // id), letting callers treat "absent" distinctly from a transport failure.
+  bool not_found() const noexcept { return not_found_; }
+
+ private:
+  bool not_found_ = false;
 };
 
 }  // namespace temporal

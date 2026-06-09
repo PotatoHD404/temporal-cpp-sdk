@@ -73,14 +73,15 @@ tapi::common::v1::RetryPolicy ToProtoRetryPolicy(const RetryPolicy& policy) {
   return out;
 }
 
-tapi::failure::v1::Failure MakeApplicationFailure(const std::string& message,
-                                                  const std::string& type) {
+tapi::failure::v1::Failure MakeApplicationFailure(const std::string& message, const std::string& type,
+                                                  bool non_retryable) {
   tapi::failure::v1::Failure f;
   f.set_message(message);
   auto* info = f.mutable_application_failure_info();
   if (!type.empty()) {
     info->set_type(type);
   }
+  info->set_non_retryable(non_retryable);
   return f;
 }
 

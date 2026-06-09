@@ -450,7 +450,15 @@ bool Client::DescribeSchedule(const std::string& schedule_id) {
   internal::wsv::DescribeScheduleRequest req;
   req.set_namespace_(ns_);
   req.set_schedule_id(schedule_id);
-  return grpc_->DescribeSchedule(req).has_schedule();
+  try {
+    static_cast<void>(grpc_->DescribeSchedule(req));
+    return true;  // the RPC succeeded => the schedule exists
+  } catch (const RpcError& e) {
+    if (e.not_found()) {
+      return false;  // contract: an absent schedule reports false, not an error
+    }
+    throw;
+  }
 }
 
 void Client::DeleteSchedule(const std::string& schedule_id) {
