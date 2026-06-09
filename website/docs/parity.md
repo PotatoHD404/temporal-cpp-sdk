@@ -32,7 +32,8 @@ cache. This page is the honest accounting.
 | Reset workflow | ✅ | `Client::ResetWorkflow` (ResetWorkflowExecution); e2e-verified |
 | Batch operations | ✅ | `StartBatchTerminate`/`StartBatchCancel` + `Describe`/`List`; e2e-verified |
 | Schedules client | ✅ | create / describe / delete / update / list / trigger / pause / unpause (interval spec) |
-| Operator & Cloud services | ❌ | |
+| Operator service | 🟡 | search-attribute add/list/remove ✅ e2e; cluster/namespace admin ❌ |
+| Cloud service | ❌ | cloud proto not vendored |
 
 ## Worker
 
@@ -67,7 +68,7 @@ cache. This page is the honest accounting.
 | Cancellation scopes / propagation | ✅ | `AwaitCancellation` + timer / activity / child-workflow `Future::Cancel` |
 | `GetVersion` / patching | ✅ | marker-based; `kDefaultVersion` on pre-version history |
 | SideEffect / MutableSideEffect | ✅ | both marker-based; `MutableSideEffect` is id-keyed and records only when the value changes |
-| Local activities | ❌ | |
+| Local activities | ✅ | `ExecuteLocalActivity` runs registered activities inline (marker record/replay) with inline retry; e2e-verified |
 | External-workflow signal/cancel | ✅ | `CancelExternalWorkflow` + `SignalExternalWorkflow` |
 | Search attributes / memo / upsert | ✅ | memo ✅; start-time + workflow `UpsertSearchAttributes` ✅ (`sa::` typed helpers) |
 | Header / context propagation | ✅ | start headers readable in the workflow + auto-propagated to activities |

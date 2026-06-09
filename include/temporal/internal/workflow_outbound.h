@@ -159,6 +159,13 @@ class WorkflowOutbound {
                                                        bool& has_current) = 0;
   virtual void RecordMutableSideEffect(const std::string& id, bool changed, const Payload& value) = 0;
 
+  // ExecuteLocalActivity: run a registered activity inline in the workflow worker
+  // (no activity-task round-trip), recording its result/failure as a marker. On
+  // replay the recorded outcome is returned without re-running. Throws the
+  // activity's failure (after inline retries) like a normal activity would.
+  virtual Payloads ExecuteLocalActivity(const std::string& activity_type, const Payloads& input,
+                                        const LocalActivityOptions& options) = 0;
+
   virtual const workflow::WorkflowInfo& Info() const = 0;
   virtual log::Logger& Logger() const = 0;
   virtual bool IsReplaying() const = 0;

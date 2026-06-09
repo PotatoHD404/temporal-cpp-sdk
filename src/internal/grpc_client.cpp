@@ -35,7 +35,10 @@ GrpcClient::GrpcClient(const std::string& target, std::string ns, std::string id
   if (!tls.server_name.empty()) {
     args.SetSslTargetNameOverride(tls.server_name);
   }
-  stub_ = wsv::WorkflowService::NewStub(grpc::CreateCustomChannel(target, creds, args));
+  auto channel = grpc::CreateCustomChannel(target, creds, args);
+  stub_ = wsv::WorkflowService::NewStub(channel);
+  // OperatorService lives on the same frontend channel as WorkflowService.
+  operator_stub_ = osv::OperatorService::NewStub(channel);
 }
 
 template <class Resp, class Invoke>
@@ -351,6 +354,33 @@ wsv::ListBatchOperationsResponse GrpcClient::ListBatchOperations(
       "ListBatchOperations", false,
       [&](grpc::ClientContext* c, wsv::ListBatchOperationsResponse* p) {
         return stub_->ListBatchOperations(c, req, p);
+      });
+}
+
+osv::AddSearchAttributesResponse GrpcClient::AddSearchAttributes(
+    const osv::AddSearchAttributesRequest& req) {
+  return UnaryCall<osv::AddSearchAttributesResponse>(
+      "AddSearchAttributes", false,
+      [&](grpc::ClientContext* c, osv::AddSearchAttributesResponse* p) {
+        return operator_stub_->AddSearchAttributes(c, req, p);
+      });
+}
+
+osv::ListSearchAttributesResponse GrpcClient::ListSearchAttributes(
+    const osv::ListSearchAttributesRequest& req) {
+  return UnaryCall<osv::ListSearchAttributesResponse>(
+      "ListSearchAttributes", false,
+      [&](grpc::ClientContext* c, osv::ListSearchAttributesResponse* p) {
+        return operator_stub_->ListSearchAttributes(c, req, p);
+      });
+}
+
+osv::RemoveSearchAttributesResponse GrpcClient::RemoveSearchAttributes(
+    const osv::RemoveSearchAttributesRequest& req) {
+  return UnaryCall<osv::RemoveSearchAttributesResponse>(
+      "RemoveSearchAttributes", false,
+      [&](grpc::ClientContext* c, osv::RemoveSearchAttributesResponse* p) {
+        return operator_stub_->RemoveSearchAttributes(c, req, p);
       });
 }
 

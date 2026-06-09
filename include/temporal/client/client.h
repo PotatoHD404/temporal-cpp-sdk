@@ -107,6 +107,14 @@ struct WorkerVersioningRules {
   std::string conflict_token;  // bytes; opaque, echoed back on update
 };
 
+// The search attributes registered in a namespace, returned by
+// Client::ListSearchAttributes. Each map is attribute name -> type string (one
+// of "Keyword", "Text", "Int", "Double", "Bool", "Datetime", "KeywordList").
+struct SearchAttributes {
+  std::map<std::string, std::string> custom;  // user-registered attributes
+  std::map<std::string, std::string> system;  // built-in attributes
+};
+
 // A point-in-time snapshot of a batch operation, returned by
 // Client::DescribeBatchOperation.
 struct BatchOperationDescription {
@@ -199,6 +207,17 @@ class Client {
   BatchOperationDescription DescribeBatchOperation(const std::string& job_id);
   // All batch operation job ids in the namespace (pages through results).
   std::vector<std::string> ListBatchOperations();
+
+  // Custom search attributes (OperatorService). Register new attributes by name
+  // and type; `type` is one of "Keyword", "Text", "Int", "Double", "Bool",
+  // "Datetime", "KeywordList" (an unknown type throws std::invalid_argument
+  // before the RPC). Registration is eventually consistent, so an attribute may
+  // not appear in ListSearchAttributes immediately after AddSearchAttributes.
+  void AddSearchAttributes(const std::map<std::string, std::string>& name_to_type);
+  // The custom + system search attributes registered in the namespace.
+  SearchAttributes ListSearchAttributes();
+  // Remove custom search attributes by name (system attributes can't be removed).
+  void RemoveSearchAttributes(const std::vector<std::string>& names);
 
   // Complete or fail an activity that deferred completion via
   // activity::Context::SetWillCompleteAsync(), identified by its task token

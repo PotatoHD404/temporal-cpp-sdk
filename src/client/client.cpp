@@ -1,11 +1,14 @@
 #include <temporal/client/client.h>
 
+#include <cctype>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "google/protobuf/util/json_util.h"
 #include "temporal/api/enums/v1/batch_operation.pb.h"
+#include "temporal/api/enums/v1/common.pb.h"
 #include "temporal/api/enums/v1/event_type.pb.h"
 #include "temporal/api/enums/v1/update.pb.h"
 #include "temporal/api/enums/v1/workflow.pb.h"
@@ -47,6 +50,41 @@ WorkflowDescription DescriptionFromInfo(const wf::WorkflowExecutionInfo& info) {
   out.status = StatusName(info.status());
   for (const auto& [key, value] : info.memo().fields()) {
     out.memo[key] = internal::FromProtoPayload(value);
+  }
+  return out;
+}
+
+// Maps a user-facing search-attribute type string to its IndexedValueType enum,
+// throwing std::invalid_argument on an unrecognized type (before any RPC).
+enums::IndexedValueType IndexedValueTypeFromString(const std::string& type) {
+  if (type == "Keyword") return enums::INDEXED_VALUE_TYPE_KEYWORD;
+  if (type == "Text") return enums::INDEXED_VALUE_TYPE_TEXT;
+  if (type == "Int") return enums::INDEXED_VALUE_TYPE_INT;
+  if (type == "Double") return enums::INDEXED_VALUE_TYPE_DOUBLE;
+  if (type == "Bool") return enums::INDEXED_VALUE_TYPE_BOOL;
+  if (type == "Datetime") return enums::INDEXED_VALUE_TYPE_DATETIME;
+  if (type == "KeywordList") return enums::INDEXED_VALUE_TYPE_KEYWORD_LIST;
+  throw std::invalid_argument("unknown search attribute type: " + type);
+}
+
+// Strips the "INDEXED_VALUE_TYPE_" prefix and TitleCases the enum name, e.g.
+// INDEXED_VALUE_TYPE_KEYWORD_LIST -> "KeywordList".
+std::string IndexedValueTypeName(enums::IndexedValueType type) {
+  std::string name = enums::IndexedValueType_Name(type);
+  const std::string prefix = "INDEXED_VALUE_TYPE_";
+  if (name.starts_with(prefix)) {
+    name = name.substr(prefix.size());
+  }
+  bool at_word_start = true;
+  std::string out;
+  out.reserve(name.size());
+  for (char ch : name) {
+    if (ch == '_') {
+      at_word_start = true;
+      continue;
+    }
+    out.push_back(at_word_start ? ch : static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    at_word_start = false;
   }
   return out;
 }
@@ -586,6 +624,39 @@ std::vector<std::string> Client::ListBatchOperations() {
     }
   }
   return out;
+}
+
+void Client::AddSearchAttributes(const std::map<std::string, std::string>& name_to_type) {
+  internal::osv::AddSearchAttributesRequest req;
+  req.set_namespace_(ns_);
+  // Validate every type first so the whole call is rejected before the RPC.
+  for (const auto& [name, type] : name_to_type) {
+    (*req.mutable_search_attributes())[name] = IndexedValueTypeFromString(type);
+  }
+  grpc_->AddSearchAttributes(req);
+}
+
+SearchAttributes Client::ListSearchAttributes() {
+  internal::osv::ListSearchAttributesRequest req;
+  req.set_namespace_(ns_);
+  const auto resp = grpc_->ListSearchAttributes(req);
+  SearchAttributes out;
+  for (const auto& [name, type] : resp.custom_attributes()) {
+    out.custom[name] = IndexedValueTypeName(type);
+  }
+  for (const auto& [name, type] : resp.system_attributes()) {
+    out.system[name] = IndexedValueTypeName(type);
+  }
+  return out;
+}
+
+void Client::RemoveSearchAttributes(const std::vector<std::string>& names) {
+  internal::osv::RemoveSearchAttributesRequest req;
+  req.set_namespace_(ns_);
+  for (const auto& name : names) {
+    req.add_search_attributes(name);
+  }
+  grpc_->RemoveSearchAttributes(req);
 }
 
 void Client::CompleteActivityPayloads(const std::string& task_token, const Payloads& result) {

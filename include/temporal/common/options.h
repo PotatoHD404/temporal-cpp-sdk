@@ -80,6 +80,15 @@ struct ActivityOptions {
   bool retry_policy_set = false;
 };
 
+// Options for `workflow::Context::ExecuteLocalActivity`. A local activity runs
+// inline in the workflow worker (no activity-task round-trip) and records its
+// result as a marker; retries happen inline within the workflow task.
+struct LocalActivityOptions {
+  std::chrono::milliseconds start_to_close_timeout{0};  // advisory bound on inline time
+  RetryPolicy retry_policy;
+  bool retry_policy_set = false;
+};
+
 // Options for `workflow::Context::ExecuteChildWorkflow`.
 struct ChildWorkflowOptions {
   std::string id;          // default: "<parent id>_c<seq>"

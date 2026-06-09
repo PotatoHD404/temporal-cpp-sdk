@@ -5,12 +5,15 @@
 
 #include <temporal/common/options.h>
 
+#include "temporal/api/operatorservice/v1/request_response.pb.h"
+#include "temporal/api/operatorservice/v1/service.grpc.pb.h"
 #include "temporal/api/workflowservice/v1/request_response.pb.h"
 #include "temporal/api/workflowservice/v1/service.grpc.pb.h"
 
 namespace temporal::internal {
 
 namespace wsv = ::temporal::api::workflowservice::v1;
+namespace osv = ::temporal::api::operatorservice::v1;
 
 // Thin wrapper over the generated WorkflowService stub. Each method issues one
 // unary RPC. Long-poll methods (PollWorkflowTaskQueue, PollActivityTaskQueue,
@@ -85,6 +88,14 @@ class GrpcClient {
   wsv::ListBatchOperationsResponse ListBatchOperations(
       const wsv::ListBatchOperationsRequest& req);
 
+  // OperatorService RPCs (separate gRPC service sharing the same channel).
+  osv::AddSearchAttributesResponse AddSearchAttributes(
+      const osv::AddSearchAttributesRequest& req);
+  osv::ListSearchAttributesResponse ListSearchAttributes(
+      const osv::ListSearchAttributesRequest& req);
+  osv::RemoveSearchAttributesResponse RemoveSearchAttributes(
+      const osv::RemoveSearchAttributesRequest& req);
+
  private:
   // Issues one unary RPC, attaching auth metadata (Authorization + namespace) when
   // an API key is configured. Defined in the .cpp (only instantiated there).
@@ -92,6 +103,7 @@ class GrpcClient {
   Resp UnaryCall(const char* name, bool poll, Invoke&& invoke) const;
 
   std::unique_ptr<wsv::WorkflowService::Stub> stub_;
+  std::unique_ptr<osv::OperatorService::Stub> operator_stub_;
   std::string ns_;
   std::string identity_;
   std::string api_key_;

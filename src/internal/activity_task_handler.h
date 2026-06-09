@@ -25,6 +25,12 @@ class ActivityTaskHandler {
 
   void Register(std::string name, worker::ActivityFn fn);
   bool has_activities() const { return !activities_.empty(); }
+  // The registered function for `name`, or an empty std::function if none. Used by
+  // the workflow handler to run local activities inline (no activity-task poll).
+  worker::ActivityFn Lookup(const std::string& name) const {
+    const auto it = activities_.find(name);
+    return it == activities_.end() ? worker::ActivityFn{} : it->second;
+  }
 
   void Handle(const wsv::PollActivityTaskQueueResponse& task);
 

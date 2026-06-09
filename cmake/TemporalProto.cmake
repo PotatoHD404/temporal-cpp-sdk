@@ -88,6 +88,7 @@ if(NOT EXISTS "${TEMPORAL_PROTO_GEN_DIR}/temporal/api/workflowservice/v1/service
             --grpc_out "${TEMPORAL_PROTO_GEN_DIR}"
             --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN_EXECUTABLE}
             temporal/api/workflowservice/v1/service.proto
+            temporal/api/operatorservice/v1/service.proto
     WORKING_DIRECTORY "${TEMPORAL_API_ROOT}"
     RESULT_VARIABLE _grpc_rc ERROR_VARIABLE _grpc_err)
   if(NOT _grpc_rc EQUAL 0)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -23,6 +24,11 @@ namespace hist = ::temporal::api::history::v1;
 
 class GrpcClient;
 
+// Resolves an activity type name to its registered function, so the workflow
+// handler can run local activities inline. Wired by the worker from the activity
+// task handler's registry.
+using LocalActivityResolver = std::function<worker::ActivityFn(const std::string&)>;
+
 // Drives workflow tasks. Uses a **sticky cache**: a running workflow's coroutine
 // is kept alive between tasks, keyed by run id, and continuation tasks apply only
 // the incremental history before resuming — no full re-replay. A task whose
@@ -38,6 +44,11 @@ class WorkflowTaskHandler {
 
   void Register(std::string name, worker::WorkflowFn fn);
   bool has_workflows() const { return !workflows_.empty(); }
+
+  // Provide the resolver used to run local activities inline (set by the worker).
+  void SetLocalActivityResolver(LocalActivityResolver resolver) {
+    local_activity_resolver_ = std::move(resolver);
+  }
 
   void Handle(const wsv::PollWorkflowTaskQueueResponse& task);
 
@@ -58,6 +69,7 @@ class WorkflowTaskHandler {
   std::string sticky_queue_;
   WorkflowPanicPolicy panic_policy_;
   std::unordered_map<std::string, worker::WorkflowFn> workflows_;
+  LocalActivityResolver local_activity_resolver_;
 
   std::mutex cache_mu_;
   LruCache<std::string, std::shared_ptr<void>> cache_;  // run_id -> WorkflowRunner (LRU-bounded)

@@ -206,6 +206,23 @@ class Context {
     return MutableSideEffect(id, std::move(fn), std::equal_to<R>{});
   }
 
+  // Run a registered activity inline in the workflow worker — no activity-task
+  // round-trip — recording its result as a marker; on replay the recorded result
+  // is returned without re-running. Retries happen inline per the retry policy.
+  // Best for short, idempotent steps. Mirrors the Go SDK's
+  // `workflow.ExecuteLocalActivity` (resolves within the call here).
+  template <class R, class... Args>
+  R ExecuteLocalActivity(const LocalActivityOptions& options, std::string_view activity_type,
+                         const Args&... args) {
+    Payloads input = converter_->ToPayloads(args...);
+    Payloads result = env_->ExecuteLocalActivity(std::string(activity_type), input, options);
+    if constexpr (std::is_void_v<R>) {
+      (void)result;
+    } else {
+      return converter_->FromPayload<R>(result.empty() ? Payload{} : result.front());
+    }
+  }
+
   const WorkflowInfo& GetInfo() const { return env_->Info(); }
   log::Logger& GetLogger() const { return env_->Logger(); }
   bool IsReplaying() const { return env_->IsReplaying(); }

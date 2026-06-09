@@ -29,6 +29,7 @@
 #include "internal/grpc_client.h"
 #include "internal/proto_util.h"
 
+#include <temporal/activity/activity.h>
 #include <temporal/common/errors.h>
 #include <temporal/internal/workflow_outbound.h>
 #include <temporal/workflow/context.h>
@@ -80,6 +81,15 @@ struct MutableSideEffectMarkerRaw {
   Payload data;
 };
 
+// A recorded LocalActivity marker (raw payloads). On success `result` holds the
+// activity's output; on failure `failed` is set with the raw type/message.
+struct LocalActivityMarkerRaw {
+  bool failed = false;
+  Payloads result;
+  Payload failure_type;
+  Payload failure_message;
+};
+
 struct Prescan {
   Payloads input;
   std::map<std::string, Payload> headers;  // from WorkflowExecutionStarted.header
@@ -102,6 +112,7 @@ struct Prescan {
   std::vector<Payload> side_effects;
   std::vector<std::pair<Payloads, Payloads>> version_markers;
   std::vector<MutableSideEffectMarkerRaw> mutable_side_effect_markers;  // in history order
+  std::vector<LocalActivityMarkerRaw> local_activities;                // in call order
 };
 
 // Walk the event history once, indexing the inputs/outcomes the runner replays
@@ -290,6 +301,29 @@ Prescan ScanHistory(const hist::History& history) {
                   {std::move(idp[0]), std::move(idxp[0]), std::move(datap[0])});
             }
           }
+        } else if (m.marker_name() == "LocalActivity") {
+          LocalActivityMarkerRaw rec;
+          const auto fail_it = m.details().find("failure-message");
+          if (fail_it != m.details().end()) {
+            rec.failed = true;
+            Payloads fm = FromProtoPayloads(fail_it->second);
+            if (!fm.empty()) {
+              rec.failure_message = std::move(fm[0]);
+            }
+            const auto type_it = m.details().find("failure-type");
+            if (type_it != m.details().end()) {
+              Payloads ft = FromProtoPayloads(type_it->second);
+              if (!ft.empty()) {
+                rec.failure_type = std::move(ft[0]);
+              }
+            }
+          } else {
+            const auto res_it = m.details().find("result");
+            if (res_it != m.details().end()) {
+              rec.result = FromProtoPayloads(res_it->second);
+            }
+          }
+          ps.local_activities.push_back(std::move(rec));
         }
         break;
       }
@@ -320,14 +354,15 @@ class WorkflowRunner final : public WorkflowOutbound {
 
   WorkflowRunner(workflow::WorkflowInfo info, std::shared_ptr<log::Logger> logger, bool is_replaying,
                  Prescan scan, const DataConverter* converter, worker::WorkflowFn workflow_fn,
-                 Payloads input)
+                 Payloads input, LocalActivityResolver local_activity_resolver = {})
       : info_(std::move(info)),
         logger_(std::move(logger)),
         is_replaying_(is_replaying),
         scan_(std::move(scan)),
         converter_(converter),
         workflow_fn_(std::move(workflow_fn)),
-        input_(std::move(input)) {
+        input_(std::move(input)),
+        local_activity_resolver_(std::move(local_activity_resolver)) {
     // Surface context-propagation headers (from WorkflowExecutionStarted) on Info.
     info_.headers = scan_.headers;
     // Resolve recorded GetVersion markers up front so GetVersion calls during the
@@ -650,6 +685,73 @@ class WorkflowRunner final : public WorkflowOutbound {
     EmitRecordMarker("MutableSideEffect", {{"id", Payloads{converter_->ToPayload(id)}},
                                            {"mse-call-index", Payloads{converter_->ToPayload(idx)}},
                                            {"data", Payloads{value}}});
+  }
+
+  Payloads ExecuteLocalActivity(const std::string& activity_type, const Payloads& input,
+                                const LocalActivityOptions& options) override {
+    produced_commands_.push_back({CommandEvent::Kind::Marker, "LocalActivity", ""});
+    const std::size_t ordinal = local_activity_seq_++;
+    if (ordinal < scan_.local_activities.size()) {
+      // Replay: return the recorded outcome without re-running the activity.
+      const auto& rec = scan_.local_activities[ordinal];
+      if (rec.failed) {
+        const auto decode = [this](const Payload& p) -> std::string {
+          try {
+            return p.data.empty() ? std::string{} : converter_->FromPayload<std::string>(p);
+          } catch (const std::exception&) {
+            return std::string{};
+          }
+        };
+        throw ApplicationError(decode(rec.failure_message), decode(rec.failure_type));
+      }
+      return rec.result;
+    }
+    // Live: resolve the registered activity and run it inline, retrying per policy.
+    if (!local_activity_resolver_) {
+      throw ApplicationError("local activities are not available on this worker",
+                             "LocalActivityError");
+    }
+    const worker::ActivityFn fn = local_activity_resolver_(activity_type);
+    if (!fn) {
+      throw ApplicationError("no activity registered for type: " + activity_type,
+                             "NotRegisteredError");
+    }
+    const int max_attempts = options.retry_policy_set && options.retry_policy.maximum_attempts > 0
+                                 ? options.retry_policy.maximum_attempts
+                                 : 1;  // a single attempt unless a retry policy says otherwise
+    std::string fail_type;
+    std::string fail_msg;
+    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+      activity::ActivityInfo la_info;
+      la_info.activity_type = activity_type;
+      la_info.workflow_id = info_.workflow_id;
+      la_info.run_id = info_.run_id;
+      la_info.task_queue = info_.task_queue;
+      la_info.headers = info_.headers;
+      la_info.attempt = attempt;
+      activity::Context ctx(la_info, converter_);
+      try {
+        Payloads result = fn(ctx, input);
+        EmitRecordMarker("LocalActivity", {{"result", result}});
+        return result;
+      } catch (const ApplicationError& e) {
+        fail_type = e.type();
+        fail_msg = e.what();
+        if (e.non_retryable() || attempt == max_attempts) {
+          break;
+        }
+      } catch (const std::exception& e) {
+        fail_type.clear();
+        fail_msg = e.what();
+        if (attempt == max_attempts) {
+          break;
+        }
+      }
+    }
+    EmitRecordMarker("LocalActivity",
+                     {{"failure-type", Payloads{converter_->ToPayload(fail_type)}},
+                      {"failure-message", Payloads{converter_->ToPayload(fail_msg)}}});
+    throw ApplicationError(fail_msg, fail_type);
   }
 
   void Block(const std::shared_ptr<FutureState>& state) override {
@@ -1040,6 +1142,8 @@ class WorkflowRunner final : public WorkflowOutbound {
   std::unordered_map<std::string, std::size_t> mse_call_count_;  // calls seen so far
   std::unordered_map<std::string, std::size_t> mse_cursor_;      // next recorded change to apply
   std::unordered_map<std::string, Payload> mse_current_;         // current value
+  std::size_t local_activity_seq_ = 0;             // ordinal of the next LocalActivity call
+  LocalActivityResolver local_activity_resolver_;  // resolves activity fns for inline execution
   std::unique_ptr<Coroutine> coroutine_;  // declared last -> destroyed first (tears down thread)
 };
 
@@ -1137,7 +1241,8 @@ std::optional<std::string> WorkflowTaskHandler::ReplayHistory(const hist::Histor
   Prescan scan = ScanHistory(history);
   Payloads input = scan.input;
   auto runner = std::make_shared<WorkflowRunner>(info, logger_, /*is_replaying=*/true, std::move(scan),
-                                                 converter_.get(), wf->second, std::move(input));
+                                                 converter_.get(), wf->second, std::move(input),
+                                                 local_activity_resolver_);
   runner->Run();
   return runner->CheckDeterminism();
 }
@@ -1218,7 +1323,8 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
     Payloads input = scan.input;
     const bool is_replaying = task.previous_started_event_id() > 0;
     runner = std::make_shared<WorkflowRunner>(info, logger_, is_replaying, std::move(scan),
-                                              converter_.get(), wf->second, std::move(input));
+                                              converter_.get(), wf->second, std::move(input),
+                                              local_activity_resolver_);
     runner->Run();
     // Non-determinism detection: on a real replay the workflow must reproduce the
     // commands history recorded, in order. Queries are read-only reconstructions

@@ -137,6 +137,13 @@ class FakeEnv : public internal::WorkflowOutbound {
     emitted_mutable_side_effects.emplace_back(id, value);
   }
 
+  Payloads ExecuteLocalActivity(const std::string& activity_type, const Payloads& input,
+                                const LocalActivityOptions&) override {
+    last_local_activity_type = activity_type;
+    last_local_activity_input = input;
+    return local_activity_result;
+  }
+
   bool TryConsumeSignal(std::string_view name, Payloads& out) override {
     if (std::string(name) != signal_name || signal_cursor >= signal_queue.size()) {
       return false;
@@ -183,6 +190,10 @@ class FakeEnv : public internal::WorkflowOutbound {
   std::unordered_map<std::string, std::size_t> mse_call_count;
   std::unordered_map<std::string, std::size_t> mse_cursor;
   std::unordered_map<std::string, Payload> mse_current;
+  // ExecuteLocalActivity: captures the call and returns a preset result.
+  std::string last_local_activity_type;
+  Payloads last_local_activity_input;
+  Payloads local_activity_result;
   internal::QueryFn update_validator;                      // captured registered validator
 };
 
@@ -365,6 +376,20 @@ TEST(WorkflowRuntime, MutableSideEffectReplaysRecordedChangesWithoutRunningFunct
   EXPECT_EQ(ctx.MutableSideEffect("cfg", fn), 20);  // call 2: replay the next recorded change
   EXPECT_EQ(calls, 0);                              // fn never ran while replaying changes
   EXPECT_TRUE(env.emitted_mutable_side_effects.empty());
+}
+
+TEST(WorkflowRuntime, ExecuteLocalActivityPassesInputAndDecodesResult) {
+  FakeEnv env;
+  const auto dc = DataConverter::Default();
+  env.local_activity_result = dc->ToPayloads(42);
+  workflow::Context ctx(&env, dc.get());
+  temporal::LocalActivityOptions o;
+  const int r = ctx.ExecuteLocalActivity<int>(o, "AddThem", 1, 2);
+  EXPECT_EQ(r, 42);
+  EXPECT_EQ(env.last_local_activity_type, "AddThem");
+  ASSERT_EQ(env.last_local_activity_input.size(), 2U);
+  EXPECT_EQ(dc->FromPayload<int>(env.last_local_activity_input[0]), 1);
+  EXPECT_EQ(dc->FromPayload<int>(env.last_local_activity_input[1]), 2);
 }
 
 TEST(WorkflowRuntime, MutableSideEffectGoesLiveAfterRecordedChangesExhausted) {

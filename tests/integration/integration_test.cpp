@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <memory>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -1311,12 +1312,14 @@ TEST_F(IntegrationTest, ResetNonexistentWorkflowThrows) {
 
 // POSITIVE: add a build id as a new default set, then read it back.
 TEST_F(IntegrationTest, BuildIdUpdateThenGet) {
-  const auto tq = UniqueTaskQueue("buildid");
+  // Process-unique task queue: the dev server persists build-id sets across runs,
+  // so a g_seq-only name would accumulate sets and break the exact-count assert.
+  const auto tq = UniqueTaskQueue("buildid") + "-" + std::to_string(std::random_device{}());
   const std::string build_id = "v1-" + std::to_string(std::random_device{}());
   client_->UpdateWorkerBuildIdCompatibility(tq, build_id);
 
   std::vector<std::vector<std::string>> sets;
-  for (int i = 0; i < 40; ++i) {  // build-id state is eventually consistent
+  for (int i = 0; i < 80; ++i) {  // build-id state is eventually consistent
     sets = client_->GetWorkerBuildIdCompatibility(tq);
     if (!sets.empty()) {
       break;
@@ -1520,6 +1523,103 @@ TEST_F(IntegrationTest, InsertAndReadWorkerAssignmentRule) {
   }
   EXPECT_TRUE(found);
   EXPECT_FALSE(rules.conflict_token.empty());
+}
+
+// ===========================================================================
+// Wave-3 parity additions: local activities (engine), operator service.
+// ===========================================================================
+
+// A local activity: runs inline in the workflow worker (no activity-task poll).
+int LocalAddActivity(temporal::activity::Context&, int a, int b) { return a + b; }
+
+// Fails on attempt 1, succeeds on attempt 2 — exercises inline retry.
+int FlakyLocalActivity(temporal::activity::Context& ctx, int n) {
+  if (ctx.GetInfo().attempt < 2) {
+    throw temporal::ApplicationError("flaky local activity", "Flaky");
+  }
+  return n;
+}
+
+// Runs two local activities across a timer (task boundary), so their markers
+// must replay deterministically.
+int LocalActivityWorkflow(temporal::workflow::Context& ctx, int base) {
+  temporal::LocalActivityOptions o;
+  const int x = ctx.ExecuteLocalActivity<int>(o, "LocalAdd", base, 5);
+  ctx.Sleep(50ms);
+  return ctx.ExecuteLocalActivity<int>(o, "LocalAdd", x, 100);
+}
+
+int RetryLocalWorkflow(temporal::workflow::Context& ctx, int n) {
+  temporal::LocalActivityOptions o;
+  o.retry_policy.maximum_attempts = 3;
+  o.retry_policy_set = true;
+  return ctx.ExecuteLocalActivity<int>(o, "FlakyLocal", n);
+}
+
+// POSITIVE: local activities run inline + their markers replay deterministically.
+TEST_F(IntegrationTest, LocalActivityRunsInlineAndReplays) {
+  const auto tq = UniqueTaskQueue("la");
+  std::string history_json;
+  {
+    temporal::worker::Worker worker(*client_, tq);
+    worker.RegisterWorkflow("LaWorkflow", LocalActivityWorkflow);
+    worker.RegisterActivity("LocalAdd", LocalAddActivity);
+    worker.Start();
+    temporal::StartWorkflowOptions o;
+    o.task_queue = tq;
+    auto handle = client_->StartWorkflow(o, "LaWorkflow", 10);
+    EXPECT_EQ(handle.Result<int>(), 115);  // (10+5)=15, then 15+100=115
+    history_json = handle.FetchHistoryJson();
+    worker.Stop();
+  }
+  ASSERT_FALSE(history_json.empty());
+  temporal::worker::Worker replayer(*client_, tq);
+  replayer.RegisterWorkflow("LaWorkflow", LocalActivityWorkflow);
+  replayer.RegisterActivity("LocalAdd", LocalAddActivity);
+  EXPECT_NO_THROW(replayer.ReplayWorkflowHistory(history_json));  // deterministic
+}
+
+// POSITIVE: a local activity that fails on attempt 1 is retried inline and succeeds.
+TEST_F(IntegrationTest, LocalActivityRetriesInline) {
+  const auto tq = UniqueTaskQueue("la-retry");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("RetryLocalWorkflow", RetryLocalWorkflow);
+  worker.RegisterActivity("FlakyLocal", FlakyLocalActivity);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "RetryLocalWorkflow", 7);
+  EXPECT_EQ(handle.Result<int>(), 7);  // succeeds on attempt 2
+  worker.Stop();
+}
+
+// POSITIVE: register a custom search attribute via the operator service, then list it.
+TEST_F(IntegrationTest, OperatorAddAndListSearchAttribute) {
+  std::string attr;
+  for (char ch : UniqueTaskQueue("sa")) {
+    attr.push_back(ch == '-' ? '_' : ch);  // SA names allow only [A-Za-z0-9_]
+  }
+  EXPECT_NO_THROW(client_->AddSearchAttributes({{attr, "Keyword"}}));
+  bool found = false;
+  std::string type;
+  for (int i = 0; i < 50 && !found; ++i) {  // registration is eventually consistent
+    const auto sa = client_->ListSearchAttributes();
+    const auto it = sa.custom.find(attr);
+    if (it != sa.custom.end()) {
+      found = true;
+      type = it->second;
+      break;
+    }
+    std::this_thread::sleep_for(300ms);
+  }
+  EXPECT_TRUE(found);
+  EXPECT_EQ(type, "Keyword");
+  EXPECT_NO_THROW(client_->RemoveSearchAttributes({attr}));
+}
+
+// NEGATIVE: an unknown type string is rejected client-side before any RPC.
+TEST_F(IntegrationTest, OperatorAddSearchAttributeRejectsUnknownType) {
+  EXPECT_THROW(client_->AddSearchAttributes({{"BogusAttr", "NotAType"}}), std::invalid_argument);
 }
 
 }  // namespace
