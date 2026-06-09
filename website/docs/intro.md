@@ -4,7 +4,7 @@ description: A native C++ SDK for Temporal — what it is, what works, and what 
 slug: /
 ---
 
-# temporal-cpp
+# temporal-cpp-sdk
 
 **A native C++ SDK for [Temporal](https://temporal.io).** It talks to the Temporal frontend over
 gRPC and runs the workflow replay engine itself — modeled on the official
@@ -36,7 +36,7 @@ There is no official C++ Temporal SDK. Temporal's SDKs come in two flavors:
 - **Core-based** (Python, TypeScript, .NET, Ruby) — delegate that engine to the Rust
   [`sdk-core`](https://github.com/temporalio/sdk-core).
 
-`temporal-cpp` takes the **native** route, reproducing the Go SDK's ergonomics in idiomatic C++20
+`temporal-cpp-sdk` takes the **native** route, reproducing the Go SDK's ergonomics in idiomatic C++20
 over its own engine (a stackful-coroutine dispatcher with a sticky in-memory cache).
 
 ## What works today

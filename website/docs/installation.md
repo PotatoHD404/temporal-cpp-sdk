@@ -1,6 +1,6 @@
 ---
 title: Installing & packaging
-description: Build temporal-cpp on macOS, Linux, or any platform via Conan, install it, and consume it from another CMake project with find_package.
+description: Build temporal-cpp-sdk on macOS, Linux, or any platform via Conan, install it, and consume it from another CMake project with find_package.
 ---
 
 # Installing & packaging
@@ -93,7 +93,7 @@ ctest --test-dir build -LE integration   # unit tests (no server needed)
 | --- | --- | --- |
 | `TEMPORAL_BUILD_TESTS` | `ON` | Build the unit + integration test driver. |
 | `TEMPORAL_BUILD_EXAMPLES` | `ON` | Build the bundled examples. |
-| `TEMPORAL_INSTALL` | `ON` | Emit `install()` rules and the `find_package(temporal-cpp)` package config. |
+| `TEMPORAL_INSTALL` | `ON` | Emit `install()` rules and the `find_package(temporal-cpp-sdk)` package config. |
 | `TEMPORAL_ENABLE_CLANG_TIDY` | `OFF` | Run clang-tidy on first-party sources during the build. |
 
 Example — a lean library-only build for packaging:
@@ -110,7 +110,7 @@ cmake --install build --prefix /your/prefix
 
 This installs the static archives (`temporal_sdk`, `temporal_proto`), the public headers under
 `include/temporal/…` (plus the generated protobuf headers), and a CMake package config under
-`lib/cmake/temporal-cpp/`.
+`lib/cmake/temporal-cpp-sdk/`.
 
 ## Consume it from another project
 
@@ -120,7 +120,7 @@ This installs the static archives (`temporal_sdk`, `temporal_proto`), the public
 cmake_minimum_required(VERSION 3.20)
 project(my_app CXX)
 
-find_package(temporal-cpp CONFIG REQUIRED)
+find_package(temporal-cpp-sdk CONFIG REQUIRED)
 
 add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE temporal::sdk)
@@ -144,7 +144,7 @@ the same `temporal::sdk` target:
 ```python
 # conanfile.txt
 [requires]
-temporal-cpp/0.1.0
+temporal-cpp-sdk/0.1.0
 
 [generators]
 CMakeDeps

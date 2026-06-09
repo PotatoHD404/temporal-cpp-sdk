@@ -1,6 +1,6 @@
 # Architecture
 
-`temporal-cpp` is a **native** C++ Temporal SDK: it speaks gRPC to the Temporal frontend
+`temporal-cpp-sdk` is a **native** C++ Temporal SDK: it speaks gRPC to the Temporal frontend
 directly and implements the determinism-critical workflow replay engine itself, mirroring the
 structure of the official [Go SDK](https://github.com/temporalio/sdk-go). It does **not** embed
 the Rust [`sdk-core`](https://github.com/temporalio/sdk-core) that the Python/TypeScript/.NET/Ruby
@@ -199,7 +199,7 @@ are taken from the system libprotobuf rather than regenerated, to avoid duplicat
 
 ## Mapping to the Go SDK
 
-| Go SDK | temporal-cpp |
+| Go SDK | temporal-cpp-sdk |
 |--------|--------------|
 | `client.Dial` / `client.Client` | `temporal::client::Client::Connect` |
 | `worker.New` / `RegisterWorkflow` / `RegisterActivity` | `temporal::worker::Worker` |

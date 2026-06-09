@@ -1,4 +1,4 @@
-# Conan 2.x recipe for temporal-cpp.
+# Conan 2.x recipe for temporal-cpp-sdk.
 #
 # Lets you build on any platform Conan supports, with the C++ toolchain deps
 # (gRPC, protobuf, nlohmann_json) resolved by Conan instead of a system package
@@ -23,10 +23,10 @@ from conan.tools.cmake import CMake, CMakeToolchain, CMakeDeps, cmake_layout
 
 
 class TemporalCppConan(ConanFile):
-    name = "temporal-cpp"
+    name = "temporal-cpp-sdk"
     version = "0.1.0"
     license = "MIT"
-    url = "https://github.com/PotatoHD404/temporal-cpp"
+    url = "https://github.com/PotatoHD404/temporal-cpp-sdk"
     description = "Native C++ SDK for Temporal (own gRPC + coroutine replay engine)"
     topics = ("temporal", "workflow", "grpc", "durable-execution")
 
@@ -84,10 +84,10 @@ class TemporalCppConan(ConanFile):
         CMake(self).install()
 
     def package_info(self):
-        # Match the in-tree CMake names so `find_package(temporal-cpp)` +
+        # Match the in-tree CMake names so `find_package(temporal-cpp-sdk)` +
         # temporal::sdk works identically whether consumed via Conan or a plain
         # install tree.
-        self.cpp_info.set_property("cmake_file_name", "temporal-cpp")
+        self.cpp_info.set_property("cmake_file_name", "temporal-cpp-sdk")
         self.cpp_info.set_property("cmake_target_name", "temporal::sdk")
         # Link order matters for static archives: the SDK depends on the protos.
         self.cpp_info.libs = ["temporal_sdk", "temporal_proto"]

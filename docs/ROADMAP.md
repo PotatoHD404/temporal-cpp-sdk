@@ -87,7 +87,7 @@ priority/dependency.
 
 ## Build / packaging
 
-- `install()` rules + a CMake package config ✅ — `find_package(temporal-cpp CONFIG)` exports
+- `install()` rules + a CMake package config ✅ — `find_package(temporal-cpp-sdk CONFIG)` exports
   `temporal::sdk`/`temporal::proto`; verified locally by a standalone downstream consumer
   (`tests/packaging/`). pkg-config + re-adding the consumer build as a Conan-toolchain CI step remain.
 - **Conan** packaging ✅ — `conanfile.py` (CMakeToolchain + CMakeDeps, `build_tests`/`build_examples`

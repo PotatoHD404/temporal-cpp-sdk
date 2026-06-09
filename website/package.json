@@ -1,8 +1,8 @@
 {
-  "name": "temporal-cpp-docs",
+  "name": "temporal-cpp-sdk-docs",
   "version": "0.1.0",
   "private": true,
-  "description": "Documentation site for temporal-cpp (a native C++ SDK for Temporal).",
+  "description": "Documentation site for temporal-cpp-sdk (a native C++ SDK for Temporal).",
   "scripts": {
     "docusaurus": "docusaurus",
     "start": "docusaurus start",

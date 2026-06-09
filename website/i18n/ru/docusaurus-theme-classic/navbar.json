@@ -1,6 +1,6 @@
 {
   "title": {
-    "message": "temporal-cpp",
+    "message": "temporal-cpp-sdk",
     "description": "The title in the navbar"
   },
   "item.label.Docs": {

@@ -5,7 +5,7 @@ description: Worker tuning, graceful lifecycle, sticky-cache observability, non-
 
 # Running in production
 
-This page covers the operational concerns you need to address before putting a `temporal-cpp` worker
+This page covers the operational concerns you need to address before putting a `temporal-cpp-sdk` worker
 in a production environment: how to tune `WorkerOptions`, how to observe the sticky cache, how to
 protect against non-deterministic code changes, and what to do about the capabilities that are not yet
 implemented.
@@ -311,7 +311,7 @@ See the full [parity matrix](/parity) for everything that is and is not implemen
 
 ### Workarounds for the most critical gaps
 
-**Insecure transport**: run `temporal-cpp` workers inside a mTLS-terminating service mesh (Istio,
+**Insecure transport**: run `temporal-cpp-sdk` workers inside a mTLS-terminating service mesh (Istio,
 Linkerd) or behind an Envoy sidecar that terminates TLS before forwarding to the Temporal frontend.
 
 **No metrics**: export `cache_hits()` and `replays()` on a periodic timer to your metrics backend as

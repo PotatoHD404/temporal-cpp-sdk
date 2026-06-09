@@ -4,7 +4,7 @@ description: Нативный C++ SDK для Temporal — что это, что 
 slug: /
 ---
 
-# temporal-cpp
+# temporal-cpp-sdk
 
 **Нативный C++ SDK для [Temporal](https://temporal.io).** Взаимодействует с фронтендом Temporal
 по gRPC и самостоятельно выполняет движок реплея воркфлоу — смоделирован по официальному
@@ -36,7 +36,7 @@ std::string Greet(temporal::workflow::Context& ctx, std::string name) {
 - **На основе Core** (Python, TypeScript, .NET, Ruby) — делегируют этот движок Rust-библиотеке
   [`sdk-core`](https://github.com/temporalio/sdk-core).
 
-`temporal-cpp` идёт по **нативному** пути, воспроизводя эргономику Go SDK в идиоматичном C++20
+`temporal-cpp-sdk` идёт по **нативному** пути, воспроизводя эргономику Go SDK в идиоматичном C++20
 поверх собственного движка (диспетчер на стекозависимых корутинах со sticky-кэшем в памяти).
 
 ## Что работает сегодня

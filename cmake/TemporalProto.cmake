@@ -74,7 +74,7 @@ set(_all_protos ${_temporal_protos} ${_extra_protos})
 # forces regeneration if the pinned submodule moves.
 if(NOT EXISTS "${TEMPORAL_PROTO_GEN_DIR}/temporal/api/workflowservice/v1/service.pb.h")
   list(LENGTH _all_protos _n)
-  message(STATUS "temporal-cpp: generating C++ from ${_n} protos (this runs once)...")
+  message(STATUS "temporal-cpp-sdk: generating C++ from ${_n} protos (this runs once)...")
   execute_process(
     COMMAND "${PROTOC_EXECUTABLE}" -I "${TEMPORAL_API_ROOT}"
             --cpp_out "${TEMPORAL_PROTO_GEN_DIR}" ${_all_protos}
@@ -115,11 +115,11 @@ set_target_properties(temporal_proto PROPERTIES CXX_CLANG_TIDY "")
 # of the installed temporal::sdk must also be able to find temporal_proto and
 # the generated headers it exposes. Ship both as part of the export set.
 if(TEMPORAL_INSTALL)
-  # Export as temporal::proto (see temporal-cpp-config.cmake.in), not the raw
+  # Export as temporal::proto (see temporal-cpp-sdk-config.cmake.in), not the raw
   # temporal::temporal_proto the namespace would otherwise produce.
   set_target_properties(temporal_proto PROPERTIES EXPORT_NAME proto)
   install(TARGETS temporal_proto
-    EXPORT temporal-cpp-targets
+    EXPORT temporal-cpp-sdk-targets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

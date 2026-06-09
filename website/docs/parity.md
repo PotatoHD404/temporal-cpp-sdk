@@ -45,7 +45,7 @@ cache. This page is the honest accounting.
 | Concurrent-execution caps | ✅ | `max_concurrent_activity/workflow_task_executions` enforced by a gate; e2e-verified |
 | Rate limiting (per-second) | ✅ | per-worker activity-per-second throttle (`max_activities_per_second`, token bucket); e2e-verified |
 | Graceful drain | ✅ | `graceful_shutdown_timeout`; Stop() drains in-flight tasks; e2e-verified |
-| Poller autoscaling | 🟡 | conservative idle-park within the fixed poller bounds; not true elasticity |
+| Poller autoscaling | ✅ | demand-driven elasticity: an elastic poller pool scales active pollers between `min_concurrent_pollers` and `max_concurrent_pollers` (a returned task scales up, empty-poll streaks park the excess); unit + e2e tested |
 | Worker Build-ID compatibility (v0.1) | ✅ | `Get/Update/PromoteWorkerBuildIdCompatibility`; e2e-verified |
 | Worker versioning rules / deployments | ✅ | assignment + compatible-redirect rules ✅ e2e; worker deployments: `ListWorkerDeployments` ✅ e2e, `Describe`/`SetWorkerDeploymentCurrentVersion` implemented (need the deployment-versions dynamic config + a live versioned worker to exercise) |
 | Session workers | 🟡 | host-unique session-queue routing + cap; no session lifecycle (create/complete/pin) |

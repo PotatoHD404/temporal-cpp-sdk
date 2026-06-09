@@ -29,32 +29,6 @@ std::atomic<bool> g_interrupted{false};
 
 void HandleSignal(int /*signum*/) { g_interrupted.store(true); }
 
-// Conservative autoscaling backoff. Once a poller has seen `threshold` (or more)
-// consecutive empty polls, it parks (sleeps a short, capped backoff before the
-// next poll) instead of hot-spinning the long-poll — but only while at least
-// `min_hot` pollers of this kind stay eager, so the queue is never left unpolled.
-// `hot` tracks the eager count; the poller hands its slot back while parked and
-// reclaims it on return. Returns immediately (no sleep) when not parking.
-void AutoscaleBackoff(int empty_streak, int threshold, int min_hot, std::atomic<int>& hot,
-                      const std::atomic<bool>& stop) {
-  if (empty_streak < threshold) {
-    return;
-  }
-  // Try to step down: succeed only if it leaves >= min_hot eager pollers.
-  int cur = hot.load();
-  while (cur > min_hot) {
-    if (hot.compare_exchange_weak(cur, cur - 1)) {
-      // Parked: back off in short slices so stop_ is observed promptly.
-      for (int i = 0; i < 10 && !stop.load(); ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      }
-      hot.fetch_add(1);  // reclaim eager slot before polling again.
-      return;
-    }
-  }
-  // Could not park (would drop below min_hot): stay eager, no sleep.
-}
-
 }  // namespace
 
 WorkerImpl::WorkerImpl(std::shared_ptr<GrpcClient> grpc, std::shared_ptr<DataConverter> converter,
@@ -64,7 +38,7 @@ WorkerImpl::WorkerImpl(std::shared_ptr<GrpcClient> grpc, std::shared_ptr<DataCon
       converter_(std::move(converter)),
       logger_(std::move(logger)),
       task_queue_(std::move(task_queue)),
-      sticky_queue_("temporal-cpp-sticky-" + NewUuid()),
+      sticky_queue_("temporal-cpp-sdk-sticky-" + NewUuid()),
       session_queue_(task_queue_ + "-session-" + NewUuid()),
       options_(options),
       workflow_handler_(grpc_.get(), converter_, logger_, task_queue_, sticky_queue_,
@@ -110,22 +84,38 @@ void WorkerImpl::Start() {
   if (!started_.compare_exchange_strong(expected, true)) {
     return;
   }
-  const int wf_pollers = options_.workflow_task_pollers > 0 ? options_.workflow_task_pollers : 1;
-  const int act_pollers = options_.activity_task_pollers > 0 ? options_.activity_task_pollers : 1;
+  const int wf_base = options_.workflow_task_pollers > 0 ? options_.workflow_task_pollers : 1;
+  const int act_base = options_.activity_task_pollers > 0 ? options_.activity_task_pollers : 1;
+  const bool scale = options_.enable_poller_autoscaling;
+  const int min_hot = scale ? std::max(1, options_.min_concurrent_pollers) : 0;
+  // Pool size per kind: the configured base, grown to max_concurrent_pollers when
+  // autoscaling (never below the base or the minimum). Non-scaling = fixed base.
+  const int wf_pool =
+      scale ? std::max({wf_base, options_.max_concurrent_pollers, min_hot}) : wf_base;
+  const int act_pool =
+      scale ? std::max({act_base, options_.max_concurrent_pollers, min_hot}) : act_base;
+
   if (workflow_handler_.has_workflows()) {
-    wf_hot_pollers_.store(2 * wf_pollers);  // normal + sticky loop per poller
-    for (int i = 0; i < wf_pollers; ++i) {
-      threads_.emplace_back([this] { WorkflowPollLoop(/*sticky=*/false); });
-      threads_.emplace_back([this] { WorkflowPollLoop(/*sticky=*/true); });
+    // Paired normal + sticky loops: the first min_hot of each kind stay hot (so
+    // both queues are always polled), the remainder of the 2*wf_pool loops scale.
+    const int always_hot = scale ? 2 * std::min(min_hot, wf_pool) : 2 * wf_pool;
+    wf_scaler_.Configure(always_hot, (2 * wf_pool) - always_hot,
+                         options_.autoscaling_idle_polls_before_park);
+    for (int i = 0; i < wf_pool; ++i) {
+      threads_.emplace_back([this, i] { WorkflowPollLoop(/*sticky=*/false, i); });
+      threads_.emplace_back([this, i] { WorkflowPollLoop(/*sticky=*/true, i); });
     }
   }
   if (activity_handler_.has_activities()) {
-    act_hot_pollers_.store(act_pollers + (options_.enable_sessions ? 1 : 0));
-    for (int i = 0; i < act_pollers; ++i) {
-      threads_.emplace_back([this] { ActivityPollLoop(/*session=*/false); });
+    const int always_hot = scale ? std::min(min_hot, act_pool) : act_pool;
+    act_scaler_.Configure(always_hot, act_pool - always_hot,
+                          options_.autoscaling_idle_polls_before_park);
+    for (int i = 0; i < act_pool; ++i) {
+      threads_.emplace_back([this, i] { ActivityPollLoop(/*session=*/false, i); });
     }
     if (options_.enable_sessions) {
-      threads_.emplace_back([this] { ActivityPollLoop(/*session=*/true); });
+      // The session poller is always hot and outside the scaler (index ignored).
+      threads_.emplace_back([this] { ActivityPollLoop(/*session=*/true, 0); });
     }
   }
   if (options_.deadlock_detection_timeout.count() > 0 && workflow_handler_.has_workflows()) {
@@ -154,6 +144,9 @@ void WorkerImpl::Stop() {
   workflow_gate_.ReleaseAll();
   activity_gate_.ReleaseAll();
   session_gate_.ReleaseAll();
+  // Wake any scalable poller parked in PollerScaler::Acquire() so it sees stop_.
+  wf_scaler_.Wake();
+  act_scaler_.Wake();
 
   // Phase 2: wait for in-flight Handle() calls to finish, bounded by the timeout.
   // Pollers blocked in a long-poll RPC are unaffected here; they return on the
@@ -212,18 +205,23 @@ void WorkerImpl::EmitStickyCacheMetrics(MetricsHandler* metrics) {
   }
 }
 
-void WorkerImpl::WorkflowPollLoop(bool sticky) {
+void WorkerImpl::WorkflowPollLoop(bool sticky, int index) {
   auto* metrics = options_.metrics_handler.get();
+  const bool scalable =
+      options_.enable_poller_autoscaling && index >= std::max(1, options_.min_concurrent_pollers);
   const MetricsHandler::Tags poller_tags{{"task_queue", task_queue_},
                                          {"poller_type", sticky ? "sticky" : "workflow"}};
   const MetricsHandler::Tags wf_tags{{"task_queue", task_queue_}};
   if (metrics) {
     metrics->Counter("temporal_poller_start", 1, poller_tags);
-    metrics->Gauge("temporal_pollers_in_flight",
-                   static_cast<double>(wf_hot_pollers_.load()), wf_tags);
+    metrics->Gauge("temporal_pollers_in_flight", static_cast<double>(wf_scaler_.active()), wf_tags);
   }
-  int empty_streak = 0;
   while (!stop_.load()) {
+    // Scalable pollers park here until demand raises the target (or Stop wakes us).
+    if (scalable && !wf_scaler_.Acquire(stop_)) {
+      break;
+    }
+    bool slot_released = !scalable;
     try {
       wsv::PollWorkflowTaskQueueRequest req;
       req.set_namespace_(grpc_->ns());
@@ -238,22 +236,24 @@ void WorkerImpl::WorkflowPollLoop(bool sticky) {
       req.set_identity(grpc_->identity());
       const auto resp = grpc_->PollWorkflowTaskQueue(req);
       const auto recv = std::chrono::steady_clock::now();
+      // An empty token is a poll timeout (no task); a non-empty one is a hit.
+      const bool got_task = !resp.task_token().empty();
+      if (options_.enable_poller_autoscaling) {
+        wf_scaler_.Report(got_task);  // scale up on a task, down after empty streaks
+      }
+      if (scalable) {
+        wf_scaler_.Release();  // hold the poll slot only across the long-poll itself
+        slot_released = true;
+      }
       if (stop_.load()) {
         break;
       }
-      // An empty token is a poll timeout (no task); a non-empty one is a hit.
-      if (resp.task_token().empty()) {
-        ++empty_streak;
+      if (!got_task) {
         if (metrics) {
           metrics->Counter("temporal_workflow_poll_timeout", 1, {});
         }
-        if (options_.enable_poller_autoscaling) {
-          AutoscaleBackoff(empty_streak, options_.autoscaling_idle_polls_before_park,
-                           options_.min_concurrent_pollers, wf_hot_pollers_, stop_);
-        }
         continue;
       }
-      empty_streak = 0;
       if (metrics) {
         metrics->Counter("temporal_workflow_poll_success", 1, {});
       }
@@ -299,6 +299,9 @@ void WorkerImpl::WorkflowPollLoop(bool sticky) {
         EmitStickyCacheMetrics(metrics);
       }
     } catch (const std::exception& e) {
+      if (scalable && !slot_released) {
+        wf_scaler_.Release();  // the poll RPC itself threw; free the slot
+      }
       deadlock_watch_.End();  // clear this thread's entry if Handle threw
       if (stop_.load()) {
         break;
@@ -336,21 +339,28 @@ void WorkerImpl::DeadlockWatchLoop() {
   }
 }
 
-void WorkerImpl::ActivityPollLoop(bool session) {
+void WorkerImpl::ActivityPollLoop(bool session, int index) {
   auto* metrics = options_.metrics_handler.get();
   // Session activities draw permits from a dedicated gate so they can be capped
-  // independently of normal activity executions.
+  // independently of normal activity executions. The session poller is always hot;
+  // only surplus normal-activity pollers scale with demand.
   ConcurrencyGate& gate = session ? session_gate_ : activity_gate_;
+  const bool scalable = options_.enable_poller_autoscaling && !session &&
+                        index >= std::max(1, options_.min_concurrent_pollers);
   const MetricsHandler::Tags poller_tags{{"task_queue", task_queue_},
                                          {"poller_type", session ? "session" : "activity"}};
   const MetricsHandler::Tags act_tags{{"task_queue", task_queue_}};
   if (metrics) {
     metrics->Counter("temporal_poller_start", 1, poller_tags);
     metrics->Gauge("temporal_pollers_in_flight",
-                   static_cast<double>(act_hot_pollers_.load()), act_tags);
+                   static_cast<double>(act_scaler_.active() + (options_.enable_sessions ? 1 : 0)),
+                   act_tags);
   }
-  int empty_streak = 0;
   while (!stop_.load()) {
+    if (scalable && !act_scaler_.Acquire(stop_)) {
+      break;
+    }
+    bool slot_released = !scalable;
     try {
       wsv::PollActivityTaskQueueRequest req;
       req.set_namespace_(grpc_->ns());
@@ -359,21 +369,23 @@ void WorkerImpl::ActivityPollLoop(bool session) {
       req.set_identity(grpc_->identity());
       const auto resp = grpc_->PollActivityTaskQueue(req);
       const auto recv = std::chrono::steady_clock::now();
+      const bool got_task = !resp.task_token().empty();
+      if (options_.enable_poller_autoscaling && !session) {
+        act_scaler_.Report(got_task);
+      }
+      if (scalable) {
+        act_scaler_.Release();
+        slot_released = true;
+      }
       if (stop_.load()) {
         break;
       }
-      if (resp.task_token().empty()) {
-        ++empty_streak;
+      if (!got_task) {
         if (metrics) {
           metrics->Counter("temporal_activity_poll_timeout", 1, {});
         }
-        if (options_.enable_poller_autoscaling) {
-          AutoscaleBackoff(empty_streak, options_.autoscaling_idle_polls_before_park,
-                           options_.min_concurrent_pollers, act_hot_pollers_, stop_);
-        }
         continue;
       }
-      empty_streak = 0;
       if (metrics) {
         metrics->Counter("temporal_activity_poll_success", 1, {});
       }
@@ -415,6 +427,9 @@ void WorkerImpl::ActivityPollLoop(bool session) {
         metrics->Counter("temporal_activity_task_handled", 1, {});
       }
     } catch (const std::exception& e) {
+      if (scalable && !slot_released) {
+        act_scaler_.Release();  // the poll RPC itself threw; free the slot
+      }
       if (stop_.load()) {
         break;
       }

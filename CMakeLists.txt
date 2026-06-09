@@ -16,7 +16,7 @@ endif()
 option(TEMPORAL_BUILD_EXAMPLES "Build examples" ON)
 option(TEMPORAL_BUILD_TESTS "Build unit tests" ON)
 option(TEMPORAL_ENABLE_CLANG_TIDY "Run clang-tidy on first-party sources" OFF)
-option(TEMPORAL_INSTALL "Generate install + find_package(temporal-cpp) rules" ON)
+option(TEMPORAL_INSTALL "Generate install + find_package(temporal-cpp-sdk) rules" ON)
 
 include(GNUInstallDirs)
 
@@ -70,20 +70,20 @@ if(TEMPORAL_BUILD_TESTS)
   add_subdirectory(tests)
 endif()
 
-# ---- Install + find_package(temporal-cpp CONFIG) ---------------------------
+# ---- Install + find_package(temporal-cpp-sdk CONFIG) ---------------------------
 # Targets (temporal_sdk, temporal_proto) are added to the export set in their
 # own CMakeLists. Here we install the public headers, the export set, and a
 # generated package config so a downstream project can:
 #
-#   find_package(temporal-cpp CONFIG REQUIRED)
+#   find_package(temporal-cpp-sdk CONFIG REQUIRED)
 #   target_link_libraries(app PRIVATE temporal::sdk)
 #
 # Examples and tests are never installed.
 if(TEMPORAL_INSTALL)
   include(CMakePackageConfigHelpers)
 
-  set(TEMPORAL_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/temporal-cpp"
-      CACHE STRING "Install location for temporal-cpp CMake package files")
+  set(TEMPORAL_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/temporal-cpp-sdk"
+      CACHE STRING "Install location for temporal-cpp-sdk CMake package files")
 
   # Public headers: the whole include/temporal/ tree (the public API includes
   # temporal/internal/* helpers, so they ship too).
@@ -91,32 +91,32 @@ if(TEMPORAL_INSTALL)
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
 
-  install(EXPORT temporal-cpp-targets
-    FILE temporal-cpp-targets.cmake
+  install(EXPORT temporal-cpp-sdk-targets
+    FILE temporal-cpp-sdk-targets.cmake
     NAMESPACE temporal::
     DESTINATION "${TEMPORAL_INSTALL_CMAKEDIR}")
 
   configure_package_config_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/temporal-cpp-config.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/temporal-cpp-config.cmake"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/temporal-cpp-sdk-config.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/temporal-cpp-sdk-config.cmake"
     INSTALL_DESTINATION "${TEMPORAL_INSTALL_CMAKEDIR}")
 
   write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/temporal-cpp-config-version.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/temporal-cpp-sdk-config-version.cmake"
     VERSION "${PROJECT_VERSION}"
     COMPATIBILITY SameMajorVersion)
 
   install(FILES
-    "${CMAKE_CURRENT_BINARY_DIR}/temporal-cpp-config.cmake"
-    "${CMAKE_CURRENT_BINARY_DIR}/temporal-cpp-config-version.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/temporal-cpp-sdk-config.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/temporal-cpp-sdk-config-version.cmake"
     DESTINATION "${TEMPORAL_INSTALL_CMAKEDIR}")
 
-  # Let consumers in the same build tree use find_package(temporal-cpp) without
+  # Let consumers in the same build tree use find_package(temporal-cpp-sdk) without
   # installing first.
-  export(EXPORT temporal-cpp-targets
-    FILE "${CMAKE_CURRENT_BINARY_DIR}/temporal-cpp-targets.cmake"
+  export(EXPORT temporal-cpp-sdk-targets
+    FILE "${CMAKE_CURRENT_BINARY_DIR}/temporal-cpp-sdk-targets.cmake"
     NAMESPACE temporal::)
 endif()
 
-message(STATUS "temporal-cpp: protobuf=${protobuf_VERSION} grpc=${gRPC_VERSION} "
+message(STATUS "temporal-cpp-sdk: protobuf=${protobuf_VERSION} grpc=${gRPC_VERSION} "
                "build=${CMAKE_BUILD_TYPE}")

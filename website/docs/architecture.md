@@ -5,7 +5,7 @@ description: How the native engine executes workflows — coroutine dispatcher a
 
 # Architecture
 
-`temporal-cpp` is a **native** SDK: it speaks gRPC to the Temporal frontend directly and implements
+`temporal-cpp-sdk` is a **native** SDK: it speaks gRPC to the Temporal frontend directly and implements
 the determinism-critical workflow replay engine itself, mirroring the Go SDK's structure. There is no
 Rust `sdk-core`.
 

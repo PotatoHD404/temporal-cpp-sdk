@@ -1,15 +1,15 @@
 // @ts-check
-// Docusaurus site config for the temporal-cpp documentation.
+// Docusaurus site config for the temporal-cpp-sdk documentation.
 // Replace YOUR_GITHUB_USERNAME below (and the GitHub links) before deploying to
 // GitHub Pages.
 const {themes} = require('prism-react-renderer');
 
 const ghUser = process.env.GH_USER || 'YOUR_GITHUB_USERNAME';
-const repo = 'temporal-cpp';
+const repo = 'temporal-cpp-sdk';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
-  title: 'temporal-cpp',
+  title: 'temporal-cpp-sdk',
   tagline: 'A native C++ SDK for Temporal',
   favicon: 'img/favicon.svg',
 
@@ -53,7 +53,7 @@ const config = {
     ({
       colorMode: {respectPrefersColorScheme: true},
       navbar: {
-        title: 'temporal-cpp',
+        title: 'temporal-cpp-sdk',
         items: [
           {type: 'docSidebar', sidebarId: 'docs', position: 'left', label: 'Docs'},
           {to: '/parity', label: 'Parity', position: 'left'},

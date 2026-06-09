@@ -24,8 +24,8 @@ definitions are vendored as a git submodule and compiled at build time.
 ## Get the code
 
 ```bash
-git clone --recurse-submodules <repo-url> temporal-cpp
-cd temporal-cpp
+git clone --recurse-submodules <repo-url> temporal-cpp-sdk
+cd temporal-cpp-sdk
 # or, in an existing clone:
 git submodule update --init --recursive
 ```

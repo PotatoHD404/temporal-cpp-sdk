@@ -170,14 +170,17 @@ struct WorkerOptions {
   // exits). A positive value bounds the drain so Stop() cannot hang forever.
   std::chrono::milliseconds graceful_shutdown_timeout{0};
 
-  // Poller autoscaling (conservative). When enabled, each poll loop parks itself
-  // after observing `autoscaling_idle_polls_before_park` consecutive empty polls
-  // and resumes on the next non-empty poll, keeping at least
-  // `min_concurrent_pollers` active per loop kind. This bounds wasted long-polls
-  // under light load without ever exceeding the configured poller counts (which
-  // act as the maximum). It does NOT spawn pollers beyond those counts.
+  // Poller autoscaling (demand-driven elasticity). When enabled, the worker spawns
+  // a pool of up to `max_concurrent_pollers` poller threads per loop kind; only
+  // `min_concurrent_pollers` long-poll at all times, and the rest are activated on
+  // demand. A poll that returns a task scales the active count up (toward the max);
+  // `autoscaling_idle_polls_before_park` consecutive empty polls scale it back down
+  // (toward the min), so idle excess pollers park instead of hot-spinning the
+  // long-poll. `max_concurrent_pollers` <= the base poller count falls back to a
+  // fixed pool sized at the base count (i.e. no elasticity).
   bool enable_poller_autoscaling = false;
   int min_concurrent_pollers = 1;
+  int max_concurrent_pollers = 4;
   int autoscaling_idle_polls_before_park = 5;
 
   // Session workers (partial). When enabled, the worker additionally long-polls a

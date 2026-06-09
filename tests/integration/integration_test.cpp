@@ -2164,4 +2164,30 @@ TEST_F(IntegrationTest, DeleteNamespaceUnknownThrows) {
   EXPECT_THROW(client_->DeleteNamespace(missing), temporal::RpcError);
 }
 
+// POSITIVE: with demand-driven poller autoscaling (min 1, max 4) a burst of
+// workflows all complete — the elastic pool scales up under load without
+// dropping work, then drains cleanly on Stop.
+TEST_F(IntegrationTest, PollerAutoscalingHandlesBurst) {
+  const auto tq = UniqueTaskQueue("autoscale");
+  temporal::WorkerOptions wo;
+  wo.enable_poller_autoscaling = true;
+  wo.min_concurrent_pollers = 1;
+  wo.max_concurrent_pollers = 4;
+  wo.autoscaling_idle_polls_before_park = 1;  // react quickly within the test
+  temporal::worker::Worker worker(*client_, tq, wo);
+  worker.RegisterWorkflow("EchoWorkflow", EchoWorkflow);
+  worker.RegisterActivity("Echo", EchoActivity);
+  worker.Start();
+  std::vector<temporal::client::WorkflowHandle> handles;
+  for (int i = 0; i < 8; ++i) {
+    temporal::StartWorkflowOptions o;
+    o.task_queue = tq;
+    handles.push_back(client_->StartWorkflow(o, "EchoWorkflow", std::string("x")));
+  }
+  for (auto& h : handles) {
+    EXPECT_EQ(h.Result<std::string>(), "x");
+  }
+  worker.Stop();
+}
+
 }  // namespace

@@ -39,7 +39,7 @@ if(TEMPORAL_INSTALL)
   # set would namespace the raw target as temporal::temporal_sdk.
   set_target_properties(temporal_sdk PROPERTIES EXPORT_NAME sdk)
   install(TARGETS temporal_sdk
-    EXPORT temporal-cpp-targets
+    EXPORT temporal-cpp-sdk-targets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

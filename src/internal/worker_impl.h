@@ -177,6 +177,85 @@ class DeadlockWatch {
   std::map<std::thread::id, Entry> active_;
 };
 
+// Demand-driven poller elasticity for one loop kind. The worker spawns a pool of
+// poller threads; the first `always_hot` of them long-poll continuously, and the
+// rest ("scalable") acquire a permit here before each poll. The scaler keeps
+// `target_` scalable pollers active: Report(got_task=true) raises the target
+// toward `max_scalable` (a returned task signals backlog), and a run of empty
+// polls lowers it toward 0 (idle), so excess pollers park. Disabled workers set
+// always_hot = pool and max_scalable = 0, so every poller is hot and Acquire is
+// never reached. Default-constructed until Configure() runs in Start().
+class PollerScaler {
+ public:
+  PollerScaler() = default;
+
+  void Configure(int always_hot, int max_scalable, int empty_polls_before_scale_down) {
+    const std::lock_guard<std::mutex> lock(mu_);
+    always_hot_ = always_hot;
+    max_scalable_ = max_scalable;
+    empty_threshold_ = empty_polls_before_scale_down > 0 ? empty_polls_before_scale_down : 1;
+    target_ = 0;
+  }
+
+  // A scalable poller blocks until it may poll (active scalable < target) or the
+  // worker stops. Returns false if stopped, in which case no slot was taken.
+  bool Acquire(const std::atomic<bool>& stop) {
+    std::unique_lock<std::mutex> lock(mu_);
+    cv_.wait(lock, [&] { return stop.load() || scalable_active_ < target_; });
+    if (stop.load()) {
+      return false;
+    }
+    ++scalable_active_;
+    return true;
+  }
+
+  void Release() {
+    {
+      const std::lock_guard<std::mutex> lock(mu_);
+      if (scalable_active_ > 0) {
+        --scalable_active_;
+      }
+    }
+    cv_.notify_one();
+  }
+
+  // Feed back a poll result: a task scales the active target up (backlog), a run
+  // of empty polls scales it down (idle). Called by every poller of this kind.
+  void Report(bool got_task) {
+    const std::lock_guard<std::mutex> lock(mu_);
+    if (got_task) {
+      empty_streak_ = 0;
+      if (target_ < max_scalable_) {
+        ++target_;
+        cv_.notify_all();
+      }
+    } else if (++empty_streak_ >= empty_threshold_) {
+      empty_streak_ = 0;
+      if (target_ > 0) {
+        --target_;
+      }
+    }
+  }
+
+  // Total hot pollers of this kind: the always-on ones plus active scalable ones.
+  int active() const {
+    const std::lock_guard<std::mutex> lock(mu_);
+    return always_hot_ + scalable_active_;
+  }
+
+  void Wake() { cv_.notify_all(); }  // unblock parked Acquire()s on Stop()
+
+ private:
+  mutable std::mutex mu_;
+  std::condition_variable cv_;
+  int always_hot_ = 0;
+  int max_scalable_ = 0;
+  int empty_threshold_ = 1;
+  int target_ = 0;
+  int scalable_active_ = 0;
+  int empty_streak_ = 0;
+};
+
 // Owns the poller threads and the two task handlers. One worker serves a single
 // task queue.
 class WorkerImpl {
@@ -205,9 +284,11 @@ class WorkerImpl {
 
  private:
   // sticky selects the sticky workflow queue; session selects the host-unique
-  // session activity queue (otherwise the normal queue is polled).
-  void WorkflowPollLoop(bool sticky);
-  void ActivityPollLoop(bool session);
+  // session activity queue (otherwise the normal queue is polled). `index` is the
+  // poller's position within its kind's pool; pollers at index >= the configured
+  // minimum are "scalable" and gated by the autoscaler.
+  void WorkflowPollLoop(bool sticky, int index);
+  void ActivityPollLoop(bool session, int index);
   void DeadlockWatchLoop();  // reports workflow tasks that overrun the deadline
 
   // Emits the sticky-cache metrics after a workflow task is handled. The handler
@@ -236,11 +317,11 @@ class WorkerImpl {
   std::atomic<bool> stop_{false};
   std::atomic<bool> draining_{false};  // set by Stop() before pollers are joined
   std::atomic<bool> started_{false};
-  // Autoscaling bookkeeping: count of "hot" (eagerly polling) pollers per kind.
-  // A poller may park (back off) only while doing so keeps the count at or above
-  // options_.min_concurrent_pollers, so the queue is never left unpolled.
-  std::atomic<int> wf_hot_pollers_{0};
-  std::atomic<int> act_hot_pollers_{0};
+  // Demand-driven poller elasticity per kind (Configure()d in Start()). The
+  // workflow scaler covers the paired normal + sticky loops; the activity scaler
+  // covers the normal activity loops (the single session poller stays always hot).
+  PollerScaler wf_scaler_;
+  PollerScaler act_scaler_;
   // Last-seen cumulative cache_hits()/replays() from the workflow handler, used
   // to derive per-task sticky-cache hit/miss deltas. Shared by the normal and
   // sticky workflow loops, so reads + updates are serialized by sticky_metrics_mu_.
