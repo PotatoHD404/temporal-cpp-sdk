@@ -120,18 +120,32 @@ cache. This page is the honest accounting.
 
 ## Roadmap {#roadmap}
 
-Rough priority order (see the repo's `docs/ROADMAP.md` for detail):
+Most of the original roadmap is now ✅ (see the matrix above):
 
 1. **Determinism hardening** — ✅ non-determinism detection + bounded sticky-cache LRU
-   (`max_cached_workflows`) + heartbeat cancel-detection (`activity::Context::IsCancelled`);
-   remaining: history pagination, heartbeat throttling.
-2. **Workflow feature surface** — ✅ `SideEffect` + `GetVersion` + update validators + cancellation
-   (timer, activity, child-workflow, `AwaitCancellation`) + selector channel cases; remaining:
-   MutableSideEffect, local activities.
-3. **Production concerns** — TLS/mTLS + API-key auth, interceptors, metrics & tracing,
-   proto/protoJSON converters + payload codecs, worker tuning.
-4. **Breadth** — ✅ replay/test framework + ✅ schedules (full client lifecycle); remaining: Nexus,
-   worker versioning, calendar/cron schedule specs, the broader client surface.
+   (`max_cached_workflows`) + heartbeat cancel-detection + history pagination.
+2. **Workflow feature surface** — ✅ `SideEffect`/`MutableSideEffect` + `GetVersion` + update
+   validators + cancellation (timer, activity, child-workflow, `AwaitCancellation`) + selector channel
+   cases + local activities.
+3. **Production concerns** — ✅ TLS/mTLS + API-key auth, interceptors, metrics & tracing,
+   proto/protoJSON converters + payload codecs, worker tuning (caps, rate limit, graceful drain,
+   demand-driven poller autoscaling).
+4. **Breadth** — ✅ replay/test framework + schedules (full client lifecycle) + worker versioning
+   (build-id + rules + deployments) + sessions (host pinning) + most of the operator surface.
+
+**What genuinely remains** (the honest gaps from the matrix):
+
+- ❌ **Replay re-application of updates** — re-delivering historical update-accepted events to handlers
+  at the right replay interleaving (only matters after a cache eviction); needs task-boundary-aware
+  replay.
+- 🟡 **Nexus operations** — endpoint management works; Nexus operation calls + a worker Nexus handler
+  (the deterministic caller command + handler) are not implemented.
+- 🟡 **Test-framework time-skip** — the replayer works; an auto-time-skipping test environment needs a
+  time-skipping server.
+- 🟡 **Deadlock abort** — overruns are detected + reported; aborting the runaway coroutine needs
+  off-poller-thread execution.
+- ❌ small specifics: heartbeat throttling, calendar/cron schedule specs, parent-close-policy /
+  signal-to-child, client-side typed failure decode.
 
 If a capability you need is in the ❌ column, it genuinely isn't there yet — please don't assume
 otherwise from the working core.
