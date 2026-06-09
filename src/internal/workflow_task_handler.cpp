@@ -516,7 +516,7 @@ class WorkflowRunner final : public WorkflowOutbound {
     if (!coroutine_) {
       coroutine_ = std::make_unique<Coroutine>([this] { RunBody(); });
     }
-    coroutine_->Resume();
+    ResumeCoroutine();
   }
 
   // Sticky continuation: apply only the new history events to the live futures
@@ -527,7 +527,22 @@ class WorkflowRunner final : public WorkflowOutbound {
     produced_commands_.clear();
     ApplyEvents(history);
     if (coroutine_) {
-      coroutine_->Resume();
+      ResumeCoroutine();
+    }
+  }
+
+  // Bound workflow-task execution: if set, a task that runs longer than this
+  // without yielding is treated as a deadlock (see deadlocked()).
+  void SetDeadlockTimeout(std::chrono::steady_clock::duration timeout) {
+    deadlock_timeout_ = timeout;
+  }
+  // True if the last Run()/ApplyAndResume() timed out (a non-yielding workflow
+  // task). The coroutine is still running on its thread; the caller must
+  // AbandonCoroutine() and leak this runner rather than reuse or destroy it.
+  bool deadlocked() const { return deadlocked_; }
+  void AbandonCoroutine() {
+    if (coroutine_) {
+      coroutine_->Abandon();
     }
   }
 
@@ -981,6 +996,19 @@ class WorkflowRunner final : public WorkflowOutbound {
   const std::vector<cmd::Command>& commands() const { return commands_; }
 
  private:
+  // Drive the coroutine to its next suspension point, honoring the deadlock
+  // bound: a task that doesn't yield within deadlock_timeout_ sets deadlocked_
+  // (the coroutine keeps running on its thread; the handler abandons + leaks it).
+  void ResumeCoroutine() {
+    if (deadlock_timeout_ > std::chrono::steady_clock::duration::zero()) {
+      if (!coroutine_->ResumeFor(deadlock_timeout_)) {
+        deadlocked_ = true;
+      }
+    } else {
+      coroutine_->Resume();
+    }
+  }
+
   // Runs on the coroutine thread: executes the workflow function to its next
   // suspension point (or completion), capturing the result or failure.
   void RunBody() {
@@ -1364,6 +1392,8 @@ class WorkflowRunner final : public WorkflowOutbound {
   workflow::WorkflowInfo info_;
   std::shared_ptr<log::Logger> logger_;
   bool is_replaying_;
+  std::chrono::steady_clock::duration deadlock_timeout_{};  // 0 => unbounded
+  bool deadlocked_ = false;
   Prescan scan_;
   const DataConverter* converter_;
   worker::WorkflowFn workflow_fn_;
@@ -1455,18 +1485,32 @@ std::shared_ptr<WorkflowRunner> BuildRunnerForQuery(GrpcClient* grpc,
   return runner;
 }
 
+// A deadlocked workflow task left its coroutine running on a detached thread that
+// still references the runner. Keep such runners alive forever (a deliberate leak)
+// so that thread never touches freed memory — destroying the runner would crash
+// it. This is the same trade-off the Go SDK makes (a deadlocked workflow goroutine
+// is leaked); deadlocks are bugs and rare.
+std::mutex g_leaked_runners_mu;
+std::vector<std::shared_ptr<WorkflowRunner>> g_leaked_runners;  // NOLINT: intentional leak
+void LeakRunner(std::shared_ptr<WorkflowRunner> runner) {
+  const std::lock_guard<std::mutex> lock(g_leaked_runners_mu);
+  g_leaked_runners.push_back(std::move(runner));
+}
+
 }  // namespace
 
 WorkflowTaskHandler::WorkflowTaskHandler(GrpcClient* grpc, std::shared_ptr<DataConverter> converter,
                                          std::shared_ptr<log::Logger> logger, std::string task_queue,
                                          std::string sticky_queue, WorkflowPanicPolicy panic_policy,
-                                         int max_cached_workflows)
+                                         int max_cached_workflows,
+                                         std::chrono::steady_clock::duration deadlock_timeout)
     : grpc_(grpc),
       converter_(std::move(converter)),
       logger_(std::move(logger)),
       task_queue_(std::move(task_queue)),
       sticky_queue_(std::move(sticky_queue)),
       panic_policy_(panic_policy),
+      deadlock_timeout_(deadlock_timeout),
       cache_(max_cached_workflows > 0 ? static_cast<std::size_t>(max_cached_workflows) : 0) {}
 
 void WorkflowTaskHandler::Register(std::string name, worker::WorkflowFn fn) {
@@ -1561,6 +1605,28 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
       events.Get(0).event_type() == enums::EVENT_TYPE_WORKFLOW_EXECUTION_STARTED;
   const bool is_query_task = task.has_query();
 
+  // A task that overran the deadlock timeout: abandon the still-running coroutine
+  // (its thread is detached + the runner leaked so it stays valid), drop any cached
+  // entry, and fail the task so the server reschedules it — instead of hanging the
+  // worker. Returns to the caller via the early `return` at each call site.
+  const auto abort_deadlock = [&](std::shared_ptr<WorkflowRunner> r) {
+    logger_->Error("workflow deadlock: task exceeded the deadlock timeout; aborting",
+                   {log::F("workflow_id", info.workflow_id),
+                    log::F("workflow_type", info.workflow_type)});
+    r->AbandonCoroutine();
+    {
+      const std::lock_guard<std::mutex> lock(cache_mu_);
+      cache_.Erase(run_id);
+    }
+    LeakRunner(std::move(r));
+    wsv::RespondWorkflowTaskFailedRequest req;
+    req.set_task_token(task.task_token());
+    req.set_identity(grpc_->identity());
+    *req.mutable_failure() = MakeApplicationFailure(
+        "workflow task deadlocked (exceeded deadlock_detection_timeout)", "WorkflowDeadlock");
+    grpc_->RespondWorkflowTaskFailed(req);
+  };
+
   // Sticky cache: continue a cached coroutine if this task's history picks up
   // exactly where we left off, or answer a query against the resident state.
   std::shared_ptr<WorkflowRunner> runner;
@@ -1584,7 +1650,12 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
     // A query observes current state without advancing the workflow; a normal
     // continuation applies its new events and resumes the parked coroutine.
     if (!is_query_task) {
+      runner->SetDeadlockTimeout(deadlock_timeout_);
       runner->ApplyAndResume(*history_ptr);
+      if (runner->deadlocked()) {
+        abort_deadlock(std::move(runner));
+        return;
+      }
     }
   } else if (is_query_task) {
     // Query for a run we don't have cached: page in full history and rebuild
@@ -1608,7 +1679,12 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
     runner = std::make_shared<WorkflowRunner>(info, logger_, is_replaying, std::move(scan),
                                               converter_.get(), wf->second, std::move(input),
                                               local_activity_resolver_, interceptor_ptrs_);
+    runner->SetDeadlockTimeout(deadlock_timeout_);
     runner->Run();
+    if (runner->deadlocked()) {
+      abort_deadlock(std::move(runner));
+      return;
+    }
     // Non-determinism detection: on a real replay the workflow must reproduce the
     // commands history recorded, in order. Queries are read-only reconstructions
     // (answered, not failed), so they are exempt.

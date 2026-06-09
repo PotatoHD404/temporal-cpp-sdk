@@ -9,8 +9,8 @@ Coroutine::Coroutine(std::function<void()> body) : body_(std::move(body)) {
 }
 
 Coroutine::~Coroutine() {
-  if (!thread_.joinable()) {
-    return;
+  if (abandoned_ || !thread_.joinable()) {
+    return;  // abandoned: the detached thread still runs; do not unwind/join.
   }
   {
     std::unique_lock<std::mutex> lock(m_);
@@ -55,6 +55,26 @@ void Coroutine::Resume() {
   turn_ = Turn::Coroutine;
   cv_.notify_all();
   cv_.wait(lock, [this] { return turn_ == Turn::Controller; });
+}
+
+bool Coroutine::ResumeFor(std::chrono::steady_clock::duration timeout) {
+  std::unique_lock<std::mutex> lock(m_);
+  if (done_) {
+    return true;
+  }
+  turn_ = Turn::Coroutine;
+  cv_.notify_all();
+  // Returns false if the coroutine did not hand control back within `timeout`
+  // (still running on its thread); true if it yielded or finished.
+  return cv_.wait_for(lock, timeout, [this] { return turn_ == Turn::Controller; });
+}
+
+void Coroutine::Abandon() {
+  std::lock_guard<std::mutex> lock(m_);
+  abandoned_ = true;
+  if (thread_.joinable()) {
+    thread_.detach();  // the body keeps running on a detached thread; never joined
+  }
 }
 
 bool Coroutine::Done() const {

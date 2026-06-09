@@ -103,7 +103,7 @@ cache. This page is the honest accounting.
 | Non-determinism detection | ✅ | replayed commands matched to history in order; `WorkflowPanicPolicy` (block/fail) |
 | Replay re-application of updates | ❌ | matters only after a cache eviction |
 | History pagination | ✅ | workflow-task / query / export paths assemble paged histories via `next_page_token` |
-| Deadlock detection / panic policies | 🟡 | panic policies ✅ (`WorkflowPanicPolicy`); deadlock watchdog detects + reports (metric/log) tasks overrunning `deadlock_detection_timeout` (e2e) — detection only, can't abort a coroutine on the poller thread |
+| Deadlock detection / panic policies | ✅ | panic policies ✅ (`WorkflowPanicPolicy`); a workflow task overrunning `deadlock_detection_timeout` is detected, reported (metric/log), AND aborted — the task is failed (server reschedules) and the worker keeps serving other work; the runaway coroutine runs on its own thread, abandoned + intentionally leaked on abort (as Go leaks a stuck workflow goroutine). e2e-tested |
 
 ## Security, observability, ecosystem
 

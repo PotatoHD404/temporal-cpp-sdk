@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -45,7 +46,8 @@ class WorkflowTaskHandler {
                       std::shared_ptr<log::Logger> logger, std::string task_queue,
                       std::string sticky_queue,
                       WorkflowPanicPolicy panic_policy = WorkflowPanicPolicy::BlockWorkflow,
-                      int max_cached_workflows = 0);
+                      int max_cached_workflows = 0,
+                      std::chrono::steady_clock::duration deadlock_timeout = {});
 
   void Register(std::string name, worker::WorkflowFn fn);
   bool has_workflows() const { return !workflows_.empty(); }
@@ -83,6 +85,7 @@ class WorkflowTaskHandler {
   std::string task_queue_;
   std::string sticky_queue_;
   WorkflowPanicPolicy panic_policy_;
+  std::chrono::steady_clock::duration deadlock_timeout_;  // 0 => unbounded task execution
   std::unordered_map<std::string, worker::WorkflowFn> workflows_;
   LocalActivityResolver local_activity_resolver_;
   std::vector<std::shared_ptr<interceptor::Interceptor>> interceptors_;

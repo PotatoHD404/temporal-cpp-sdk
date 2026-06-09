@@ -2405,4 +2405,35 @@ TEST_F(IntegrationTest, ChildParentClosePolicyAbandon) {
   worker.Stop();
 }
 
+// Blocks the coroutine thread without ever yielding — simulates a deadlock (a
+// blocking call or non-yielding loop in workflow code).
+std::string DeadlockWorkflow(temporal::workflow::Context&) {
+  std::this_thread::sleep_for(std::chrono::seconds(8));
+  return "should-not-complete";
+}
+
+// POSITIVE: a workflow task that overruns the deadlock timeout is ABORTED (failed,
+// its coroutine abandoned) so the worker keeps serving other workflows instead of
+// hanging forever on the stuck task.
+TEST_F(IntegrationTest, DeadlockAbortKeepsWorkerAlive) {
+  const auto tq = UniqueTaskQueue("deadlock-abort");
+  temporal::WorkerOptions wo;
+  wo.deadlock_detection_timeout = std::chrono::milliseconds(2000);
+  temporal::worker::Worker worker(*client_, tq, wo);
+  worker.RegisterWorkflow("DeadlockWorkflow", DeadlockWorkflow);
+  worker.RegisterWorkflow("EchoWorkflow", EchoWorkflow);
+  worker.RegisterActivity("Echo", EchoActivity);
+  worker.Start();
+  temporal::StartWorkflowOptions od;
+  od.task_queue = tq;
+  auto deadlocked = client_->StartWorkflow(od, "DeadlockWorkflow");  // task will be aborted + retried
+  // Despite the deadlocking workflow, the worker stays alive and completes other work.
+  temporal::StartWorkflowOptions oe;
+  oe.task_queue = tq;
+  auto echo = client_->StartWorkflow(oe, "EchoWorkflow", std::string("alive"));
+  EXPECT_EQ(echo.Result<std::string>(), "alive");
+  deadlocked.Terminate("test cleanup");
+  worker.Stop();
+}
+
 }  // namespace

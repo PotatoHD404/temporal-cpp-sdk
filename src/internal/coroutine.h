@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <exception>
 #include <functional>
@@ -29,7 +30,17 @@ class Coroutine {
 
   // Controller side: run the coroutine until it Yields or finishes. No-op once done.
   void Resume();
+  // Like Resume(), but gives up after `timeout` if the coroutine hasn't yielded
+  // (a likely deadlock: a non-yielding loop or a blocking call in workflow code).
+  // Returns true if it yielded/finished, false on timeout — in which case the
+  // coroutine is STILL running on its thread and the caller MUST Abandon() it
+  // (and keep this object alive) rather than destroy it.
+  bool ResumeFor(std::chrono::steady_clock::duration timeout);
   bool Done() const;
+  // Give up on a coroutine that overran (detach its thread; ~Coroutine will not
+  // join/unwind it). The object must outlive the detached thread, which still
+  // references it — so an abandoned coroutine is intentionally leaked, never freed.
+  void Abandon();
   // Controller side: rethrow any exception the body let escape (other than abort).
   void RethrowIfError() const;
 
@@ -47,6 +58,7 @@ class Coroutine {
   Turn turn_ = Turn::Controller;
   bool done_ = false;
   bool abort_ = false;
+  bool abandoned_ = false;  // overran; thread detached, object intentionally leaked
   std::exception_ptr error_;
   std::thread thread_;
 };
