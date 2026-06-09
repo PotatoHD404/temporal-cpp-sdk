@@ -283,8 +283,7 @@ std::string g_async_token;  // NOLINT: test handoff for async completion
 
 // Defers completion: captures its task token, signals async, returns (ignored).
 std::string AsyncCaptureActivity(temporal::activity::Context& ctx, int) {
-  g_async_token = ctx.GetInfo().task_token;
-  ctx.SetWillCompleteAsync();
+  g_async_token = ctx.defer_completion();  // sets async + returns the task token
   g_async_captured.store(true);
   return "";
 }

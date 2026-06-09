@@ -20,6 +20,12 @@ namespace interceptor {
 class Interceptor;  // forward-declared; full type in <temporal/interceptor/interceptor.h>
 }  // namespace interceptor
 
+// Re-export the std::chrono duration literals so option fields read naturally —
+// `o.start_to_close_timeout = 30s;` after `using namespace temporal::literals;`.
+namespace literals {
+using namespace std::chrono_literals;  // NOLINT(google-build-using-namespace)
+}  // namespace literals
+
 // Retry behavior for activities (and, where supported, workflows). Mirrors
 // `temporal.api.common.v1.RetryPolicy`. Zero fields fall back to server defaults.
 struct RetryPolicy {

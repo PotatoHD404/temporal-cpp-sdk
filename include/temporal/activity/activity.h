@@ -62,6 +62,15 @@ class Context {
   void SetWillCompleteAsync() { will_complete_async_ = true; }
   bool WillCompleteAsync() const { return will_complete_async_; }
 
+  // Defer completion and hand back the task token to finish it with later (via
+  // Client::CompleteActivity / FailActivity). One call instead of
+  // SetWillCompleteAsync() + GetInfo().task_token:
+  //   const auto token = ctx.defer_completion();
+  [[nodiscard]] std::string defer_completion() {
+    will_complete_async_ = true;
+    return info_.task_token;
+  }
+
  private:
   ActivityInfo info_;
   const DataConverter* converter_;
