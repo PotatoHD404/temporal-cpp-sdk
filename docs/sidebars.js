@@ -18,7 +18,9 @@ const sidebars = {
       items: [
         'workflows/overview',
         'workflows/messaging',
+        'signals',
         'workflows/composition',
+        'nexus',
         'patterns',
       ],
     },

@@ -268,6 +268,10 @@ test instead of a running workflow in production.
 
 ## Nexus operations {#nexus}
 
+:::tip
+Full guide: **[Nexus operations](/nexus)** — endpoints, the worker handler, and a complete end-to-end example.
+:::
+
 Nexus lets one workflow call an operation served by another team's worker —
 possibly in another namespace — without coupling to that team's workflow types. The
 SDK supports the full round-trip: a worker registers an operation handler, a client

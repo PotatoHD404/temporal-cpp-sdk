@@ -15,6 +15,10 @@ Three ways to interact with a *running* workflow, from a client or another workf
 
 ## Signals
 
+:::tip
+Full guide: **[Signals](/signals)** — receiving, sending, typed handles, signal-with-start, and racing signals against timers.
+:::
+
 A signal delivers data into a running workflow asynchronously. The workflow reads them from a
 **channel**:
 
