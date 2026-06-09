@@ -31,6 +31,7 @@
 
 #include <temporal/activity/activity.h>
 #include <temporal/common/errors.h>
+#include <temporal/converter/failure_converter.h>
 #include <temporal/interceptor/interceptor.h>
 #include <temporal/internal/workflow_outbound.h>
 #include <temporal/workflow/context.h>
@@ -898,10 +899,18 @@ class WorkflowRunner final : public WorkflowOutbound {
       continue_as_new_ = c;
       status_ = Status::ContinueAsNew;
     } catch (const ApplicationError& e) {
-      failure_ = MakeApplicationFailure(e.what(), e.type());
+      if (const auto& fc = converter_->failure_converter()) {
+        fc->ErrorToFailure(e, failure_);  // custom failure encoding
+      } else {
+        failure_ = MakeApplicationFailure(e.what(), e.type());
+      }
       status_ = Status::Failed;
     } catch (const std::exception& e) {
-      failure_ = MakeApplicationFailure(e.what(), "std::exception");
+      if (const auto& fc = converter_->failure_converter()) {
+        fc->ErrorToFailure(e, failure_);
+      } else {
+        failure_ = MakeApplicationFailure(e.what(), "std::exception");
+      }
       status_ = Status::Failed;
     }
     // Record the terminal command so a replay can be matched against history's

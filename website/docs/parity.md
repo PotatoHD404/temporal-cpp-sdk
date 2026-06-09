@@ -92,7 +92,7 @@ cache. This page is the honest accounting.
 | Custom converters | ✅ | |
 | Proto / ProtoJSON converters | ✅ | binary protobuf + proto-json (`WithProtoJson`), both directions; unit-tested |
 | Payload codecs (encryption/compression) | ✅ | `PayloadCodec` interface + chain + bundled base64 and **gzip (deflate) compression** codecs; encryption is bring-your-own (as in the Go SDK) |
-| Custom failure converter | 🟡 | `FailureConverter` interface + default + `DataConverter` hook; **wired into the activity-failure encoding path (e2e-verified)**; workflow-failure + decode paths still use the default |
+| Custom failure converter | ✅ | `FailureConverter` interface + default + `DataConverter` hook; wired into **activity- and workflow-failure encoding** (e2e-verified); client-side decode still surfaces the default `WorkflowFailedError` |
 | Large-payload / external storage | 🟡 | `PayloadStorage` interface + in-memory reference impl; no real external store (S3/GCS) bundled |
 
 ## Determinism & safety

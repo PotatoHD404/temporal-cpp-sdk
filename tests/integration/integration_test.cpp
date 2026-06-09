@@ -1925,6 +1925,37 @@ TEST_F(IntegrationTest, CustomFailureConverterEncodesActivityFailure) {
   worker.Stop();
 }
 
+std::string ThrowingWorkflow(temporal::workflow::Context&, std::string) {
+  throw temporal::ApplicationError("wf-boom", "WfError");
+}
+
+// POSITIVE: the custom failure converter encodes a WORKFLOW's own failure (the
+// workflow-failure path, not just activity failures).
+TEST_F(IntegrationTest, CustomFailureConverterEncodesWorkflowFailure) {
+  const char* addr = std::getenv("TEMPORAL_ADDRESS");
+  temporal::ClientOptions opt;
+  opt.target = (addr != nullptr) ? addr : "localhost:7233";
+  auto converter = temporal::DataConverter::Default();
+  converter->WithFailureConverter(std::make_shared<WrappingFailureConverter>());
+  opt.data_converter = converter;
+  auto fc_client = temporal::client::Client::Connect(opt);
+
+  const auto tq = UniqueTaskQueue("failconv-wf");
+  temporal::worker::Worker worker(fc_client, tq);
+  worker.RegisterWorkflow("ThrowingWorkflow", ThrowingWorkflow);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = fc_client.StartWorkflow(o, "ThrowingWorkflow", std::string("x"));
+  try {
+    handle.Result<std::string>();
+    FAIL() << "expected the workflow to fail";
+  } catch (const temporal::WorkflowFailedError& e) {
+    EXPECT_NE(std::string(e.what()).find("WRAPPED:wf-boom"), std::string::npos);
+  }
+  worker.Stop();
+}
+
 std::atomic<int> g_client_start_intercepts{0};
 
 class RecordingClientOutbound : public temporal::interceptor::ClientOutboundInterceptor {
