@@ -67,10 +67,8 @@ std::string ActEdgeSlowActivity(temporal::activity::Context&, int) {
 std::string ActEdgeRetrySucceedWorkflow(temporal::workflow::Context& ctx, std::string s) {
   temporal::ActivityOptions o;
   o.start_to_close_timeout = 10s;
-  o.retry_policy.maximum_attempts = 5;
-  o.retry_policy.initial_interval = 10ms;
-  o.retry_policy.maximum_interval = 50ms;  // keep backoff from stretching the test
-  o.retry_policy_set = true;
+  o.retry_policy = temporal::RetryPolicy{
+      .initial_interval = 10ms, .maximum_interval = 50ms, .maximum_attempts = 5};
   return ctx.ExecuteActivity<std::string>(o, "ActEdgeFlaky", s).Get();
 }
 
@@ -79,10 +77,8 @@ std::string ActEdgeRetrySucceedWorkflow(temporal::workflow::Context& ctx, std::s
 std::string ActEdgeRetryExhaustWorkflow(temporal::workflow::Context& ctx, std::string s) {
   temporal::ActivityOptions o;
   o.start_to_close_timeout = 10s;
-  o.retry_policy.maximum_attempts = 3;
-  o.retry_policy.initial_interval = 10ms;
-  o.retry_policy.maximum_interval = 50ms;
-  o.retry_policy_set = true;
+  o.retry_policy = temporal::RetryPolicy{
+      .initial_interval = 10ms, .maximum_interval = 50ms, .maximum_attempts = 3};
   return ctx.ExecuteActivity<std::string>(o, "ActEdgeAlwaysFails", s).Get();
 }
 
@@ -91,9 +87,8 @@ std::string ActEdgeRetryExhaustWorkflow(temporal::workflow::Context& ctx, std::s
 std::string ActEdgeNonRetryableWorkflow(temporal::workflow::Context& ctx, std::string s) {
   temporal::ActivityOptions o;
   o.start_to_close_timeout = 10s;
-  o.retry_policy.maximum_attempts = 5;  // room to retry; non_retryable must veto it
-  o.retry_policy.initial_interval = 10ms;
-  o.retry_policy_set = true;
+  // room to retry; the non_retryable flag must veto it on its own.
+  o.retry_policy = temporal::RetryPolicy{.initial_interval = 10ms, .maximum_attempts = 5};
   return ctx.ExecuteActivity<std::string>(o, "ActEdgeNonRetryable", s).Get();
 }
 
@@ -102,8 +97,7 @@ std::string ActEdgeNonRetryableWorkflow(temporal::workflow::Context& ctx, std::s
 std::string ActEdgeTimeoutWorkflow(temporal::workflow::Context& ctx, int n) {
   temporal::ActivityOptions o;
   o.start_to_close_timeout = 1s;  // activity sleeps ~3s -> times out
-  o.retry_policy.maximum_attempts = 1;  // single shot: don't multiply the 1s timeout
-  o.retry_policy_set = true;
+  o.retry_policy = temporal::RetryPolicy{.maximum_attempts = 1};  // single shot
   return ctx.ExecuteActivity<std::string>(o, "ActEdgeSlow", n).Get();
 }
 

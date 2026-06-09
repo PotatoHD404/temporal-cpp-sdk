@@ -765,8 +765,8 @@ class WorkflowRunner final : public WorkflowOutbound {
       throw ApplicationError("no activity registered for type: " + activity_type,
                              "NotRegisteredError");
     }
-    const int max_attempts = options.retry_policy_set && options.retry_policy.maximum_attempts > 0
-                                 ? options.retry_policy.maximum_attempts
+    const int max_attempts = options.retry_policy && options.retry_policy->maximum_attempts > 0
+                                 ? options.retry_policy->maximum_attempts
                                  : 1;  // a single attempt unless a retry policy says otherwise
     std::string fail_type;
     std::string fail_msg;
@@ -1085,8 +1085,8 @@ class WorkflowRunner final : public WorkflowOutbound {
     if (options.heartbeat_timeout.count() > 0) {
       *attr->mutable_heartbeat_timeout() = ToProtoDuration(options.heartbeat_timeout);
     }
-    if (options.retry_policy_set) {
-      *attr->mutable_retry_policy() = ToProtoRetryPolicy(options.retry_policy);
+    if (options.retry_policy) {
+      *attr->mutable_retry_policy() = ToProtoRetryPolicy(*options.retry_policy);
     }
     commands_.push_back(std::move(c));
   }

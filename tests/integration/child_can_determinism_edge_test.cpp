@@ -39,8 +39,8 @@ int CcdAddOneActivity(temporal::activity::Context&, int n) { return n + 1; }
 std::string CcdFailingChildWorkflow(temporal::workflow::Context& ctx, std::string s) {
   temporal::ActivityOptions o;
   o.start_to_close_timeout = 10s;
-  o.retry_policy.maximum_attempts = 1;  // fail fast; default policy retries forever
-  o.retry_policy_set = true;
+  // fail fast; the default policy retries forever.
+  o.retry_policy = temporal::RetryPolicy{.maximum_attempts = 1};
   return ctx.ExecuteActivity<std::string>(o, "CcdBoom", s).Get();
 }
 

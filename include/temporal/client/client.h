@@ -78,6 +78,16 @@ class WorkflowHandle {
   }
 
   void Signal(std::string_view signal_name, const Payloads& args);
+
+  // Encode + send a signal in one call, like StartWorkflow/Query/Update (so callers
+  // don't hand-encode Payloads). The requires-clause keeps the pre-encoded
+  // `Signal(name, Payloads)` overload above unambiguous for a single Payloads arg.
+  template <class... Args>
+    requires(!(sizeof...(Args) == 1 && (std::is_same_v<std::decay_t<Args>, Payloads> && ...)))
+  void Signal(std::string_view signal_name, const Args&... args) {
+    Signal(signal_name, converter_->ToPayloads(args...));
+  }
+
   void Cancel();
   void Terminate(std::string_view reason = "");
 

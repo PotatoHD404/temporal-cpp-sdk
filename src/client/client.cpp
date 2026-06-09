@@ -365,8 +365,8 @@ WorkflowHandle Client::StartWorkflowPayloads(const StartWorkflowOptions& options
     if (in.options.task_timeout.count() > 0) {
       *req.mutable_workflow_task_timeout() = internal::ToProtoDuration(in.options.task_timeout);
     }
-    if (in.options.retry_policy_set) {
-      *req.mutable_retry_policy() = internal::ToProtoRetryPolicy(in.options.retry_policy);
+    if (in.options.retry_policy) {
+      *req.mutable_retry_policy() = internal::ToProtoRetryPolicy(*in.options.retry_policy);
     }
     for (const auto& [key, value] : in.options.memo) {
       (*req.mutable_memo()->mutable_fields())[key] = internal::ToProtoPayload(value);
@@ -430,8 +430,8 @@ WorkflowHandle Client::SignalWithStartWorkflowPayloads(const StartWorkflowOption
   if (options.task_timeout.count() > 0) {
     *req.mutable_workflow_task_timeout() = internal::ToProtoDuration(options.task_timeout);
   }
-  if (options.retry_policy_set) {
-    *req.mutable_retry_policy() = internal::ToProtoRetryPolicy(options.retry_policy);
+  if (options.retry_policy) {
+    *req.mutable_retry_policy() = internal::ToProtoRetryPolicy(*options.retry_policy);
   }
   for (const auto& [key, value] : options.memo) {
     (*req.mutable_memo()->mutable_fields())[key] = internal::ToProtoPayload(value);

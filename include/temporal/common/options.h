@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -60,8 +61,7 @@ struct StartWorkflowOptions {
   std::chrono::milliseconds execution_timeout{0};
   std::chrono::milliseconds run_timeout{0};
   std::chrono::milliseconds task_timeout{0};
-  RetryPolicy retry_policy;
-  bool retry_policy_set = false;
+  std::optional<RetryPolicy> retry_policy;  // unset => server default retry behavior
   // Non-indexed metadata attached to the workflow, returned by Describe. Build
   // values with the data converter, e.g. `o.memo["owner"] = dc->ToPayload("me")`.
   std::map<std::string, Payload> memo;
@@ -81,8 +81,7 @@ struct ActivityOptions {
   std::chrono::milliseconds schedule_to_start_timeout{0};
   std::chrono::milliseconds start_to_close_timeout{0};  // effectively required
   std::chrono::milliseconds heartbeat_timeout{0};
-  RetryPolicy retry_policy;
-  bool retry_policy_set = false;
+  std::optional<RetryPolicy> retry_policy;  // unset => server default retry behavior
 };
 
 // Options for `workflow::Context::ExecuteLocalActivity`. A local activity runs
@@ -90,8 +89,7 @@ struct ActivityOptions {
 // result as a marker; retries happen inline within the workflow task.
 struct LocalActivityOptions {
   std::chrono::milliseconds start_to_close_timeout{0};  // advisory bound on inline time
-  RetryPolicy retry_policy;
-  bool retry_policy_set = false;
+  std::optional<RetryPolicy> retry_policy;  // unset => default inline retry behavior
 };
 
 // Options for `workflow::Context::ExecuteChildWorkflow`.

@@ -258,8 +258,7 @@ TEST(WorkflowRuntime, SignalChannelParksWhenEmpty) {
   auto channel = ctx.GetSignalChannel<std::string>("greet");
   EXPECT_THROW(channel.Receive(), FakeSuspend);
 
-  std::string out;
-  EXPECT_FALSE(channel.ReceiveAsync(out));
+  EXPECT_FALSE(channel.ReceiveAsync().has_value());  // optional form: nullopt when empty
 }
 
 TEST(WorkflowRuntime, CancellationFlagSurfaces) {

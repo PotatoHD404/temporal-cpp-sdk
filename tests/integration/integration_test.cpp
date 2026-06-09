@@ -79,8 +79,8 @@ int ParallelWorkflow(temporal::workflow::Context& ctx, int base) {
 std::string FailWorkflow(temporal::workflow::Context& ctx, std::string s) {
   temporal::ActivityOptions o;
   o.start_to_close_timeout = 10s;
-  o.retry_policy.maximum_attempts = 1;  // fail fast: proves RetryPolicy is wired
-  o.retry_policy_set = true;
+  // fail fast: proves RetryPolicy is wired.
+  o.retry_policy = temporal::RetryPolicy{.maximum_attempts = 1};
   return ctx.ExecuteActivity<std::string>(o, "Boom", s).Get();
 }
 
@@ -367,8 +367,7 @@ std::string HeartbeatWorkflow(temporal::workflow::Context& ctx, int n) {
   temporal::ActivityOptions o;
   o.start_to_close_timeout = 30s;
   o.heartbeat_timeout = 2s;  // shorter than the activity's ~2.5s runtime
-  o.retry_policy.maximum_attempts = 2;
-  o.retry_policy_set = true;
+  o.retry_policy = temporal::RetryPolicy{.maximum_attempts = 2};
   return ctx.ExecuteActivity<std::string>(o, "Heartbeat", n).Get();
 }
 
@@ -485,8 +484,7 @@ TEST_F(IntegrationTest, SignalDeliveredToWorkflow) {
   temporal::StartWorkflowOptions o;
   o.task_queue = tq;
   auto handle = client_->StartWorkflow(o, "GreetBySignalWorkflow");
-  const auto dc = temporal::DataConverter::Default();
-  handle.Signal("setName", dc->ToPayloads(std::string("World")));
+  handle.Signal("setName", std::string("World"));  // variadic: encodes for us
   EXPECT_EQ(handle.Result<std::string>(), "Hello, World");
   worker.Stop();
 }
@@ -500,10 +498,9 @@ TEST_F(IntegrationTest, MultipleSignalsCountedInOrder) {
   temporal::StartWorkflowOptions o;
   o.task_queue = tq;
   auto handle = client_->StartWorkflow(o, "CountSignalsWorkflow");
-  const auto dc = temporal::DataConverter::Default();
-  handle.Signal("input", dc->ToPayloads(std::string("a")));
-  handle.Signal("input", dc->ToPayloads(std::string("b")));
-  handle.Signal("input", dc->ToPayloads(std::string("done")));
+  handle.Signal("input", std::string("a"));
+  handle.Signal("input", std::string("b"));
+  handle.Signal("input", std::string("done"));
   EXPECT_EQ(handle.Result<int>(), 2);  // "a" and "b" counted, "done" terminates
   worker.Stop();
 }
@@ -1558,8 +1555,7 @@ int LocalActivityWorkflow(temporal::workflow::Context& ctx, int base) {
 
 int RetryLocalWorkflow(temporal::workflow::Context& ctx, int n) {
   temporal::LocalActivityOptions o;
-  o.retry_policy.maximum_attempts = 3;
-  o.retry_policy_set = true;
+  o.retry_policy = temporal::RetryPolicy{.maximum_attempts = 3};
   return ctx.ExecuteLocalActivity<int>(o, "FlakyLocal", n);
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -28,6 +29,17 @@ class ReceiveChannel {
     return Decode(payloads);
   }
 
+  // Non-blocking receive: returns the next buffered signal, or std::nullopt when
+  // none is available — the idiomatic form (`if (auto v = ch.ReceiveAsync())`).
+  std::optional<T> ReceiveAsync() {
+    Payloads payloads;
+    if (!env_->TryConsumeSignal(name_, payloads)) {
+      return std::nullopt;
+    }
+    return Decode(payloads);
+  }
+
+  // Bool + out-param form, kept for source compatibility.
   bool ReceiveAsync(T& out) {
     Payloads payloads;
     if (!env_->TryConsumeSignal(name_, payloads)) {
