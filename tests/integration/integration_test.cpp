@@ -1705,11 +1705,32 @@ class RecordingActivityInbound : public temporal::interceptor::ActivityInboundIn
   }
 };
 
+std::atomic<int> g_intercepted_workflows{0};
+
+// A workflow-inbound interceptor that counts live (non-replay) workflow runs.
+class RecordingWorkflowInbound : public temporal::interceptor::WorkflowInboundInterceptor {
+ public:
+  explicit RecordingWorkflowInbound(temporal::interceptor::WorkflowInboundInterceptor* next)
+      : temporal::interceptor::WorkflowInboundInterceptor(next) {}
+  temporal::Payloads ExecuteWorkflow(temporal::workflow::Context& ctx,
+                                     temporal::interceptor::ExecuteWorkflowInput& in,
+                                     const temporal::interceptor::Header& header) override {
+    if (!ctx.IsReplaying()) {
+      ++g_intercepted_workflows;
+    }
+    return next_->ExecuteWorkflow(ctx, in, header);
+  }
+};
+
 class RecordingInterceptor : public temporal::interceptor::Interceptor {
  public:
   std::unique_ptr<temporal::interceptor::ActivityInboundInterceptor> InterceptActivity(
       temporal::interceptor::ActivityInboundInterceptor* next) override {
     return std::make_unique<RecordingActivityInbound>(next);
+  }
+  std::unique_ptr<temporal::interceptor::WorkflowInboundInterceptor> InterceptWorkflow(
+      temporal::interceptor::WorkflowInboundInterceptor* next) override {
+    return std::make_unique<RecordingWorkflowInbound>(next);
   }
 };
 
@@ -1730,6 +1751,36 @@ TEST_F(IntegrationTest, ActivityInboundInterceptorWrapsExecution) {
   EXPECT_EQ(h.Result<std::string>(), "hi");
   EXPECT_GT(g_intercepted_activities.load(), 0);  // the Echo activity was intercepted
   worker.Stop();
+}
+
+// POSITIVE + SAFETY: a workflow-inbound interceptor wraps the real workflow
+// execution AND the recorded history still replays deterministically (the
+// wrapping must not perturb command emission).
+TEST_F(IntegrationTest, WorkflowInboundInterceptorWrapsExecutionAndReplays) {
+  const auto tq = UniqueTaskQueue("wf-interceptor");
+  g_intercepted_workflows = 0;
+  temporal::WorkerOptions wo;
+  wo.interceptors.push_back(std::make_shared<RecordingInterceptor>());
+  std::string history_json;
+  {
+    temporal::worker::Worker worker(*client_, tq, wo);
+    worker.RegisterWorkflow("EchoWorkflow", EchoWorkflow);
+    worker.RegisterActivity("Echo", EchoActivity);
+    worker.Start();
+    temporal::StartWorkflowOptions o;
+    o.task_queue = tq;
+    auto h = client_->StartWorkflow(o, "EchoWorkflow", std::string("hi"));
+    EXPECT_EQ(h.Result<std::string>(), "hi");
+    EXPECT_GT(g_intercepted_workflows.load(), 0);  // the workflow execution was intercepted
+    history_json = h.FetchHistoryJson();
+    worker.Stop();
+  }
+  ASSERT_FALSE(history_json.empty());
+  // Replay through the same interceptor must remain deterministic.
+  temporal::worker::Worker replayer(*client_, tq, wo);
+  replayer.RegisterWorkflow("EchoWorkflow", EchoWorkflow);
+  replayer.RegisterActivity("Echo", EchoActivity);
+  EXPECT_NO_THROW(replayer.ReplayWorkflowHistory(history_json));
 }
 
 // A failure converter that tags every error message, to prove the activity

@@ -77,8 +77,9 @@ WorkerImpl::WorkerImpl(std::shared_ptr<GrpcClient> grpc, std::shared_ptr<DataCon
   // workflow handler resolves activity functions from the activity registry).
   workflow_handler_.SetLocalActivityResolver(
       [this](const std::string& type) { return activity_handler_.Lookup(type); });
-  // Activity-inbound interceptors run around every activity execution.
+  // Inbound interceptors run around every activity / workflow execution.
   activity_handler_.SetInterceptors(options_.interceptors);
+  workflow_handler_.SetInterceptors(options_.interceptors);
 }
 
 WorkerImpl::~WorkerImpl() { Stop(); }

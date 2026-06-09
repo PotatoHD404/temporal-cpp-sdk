@@ -31,6 +31,7 @@
 
 #include <temporal/activity/activity.h>
 #include <temporal/common/errors.h>
+#include <temporal/interceptor/interceptor.h>
 #include <temporal/internal/workflow_outbound.h>
 #include <temporal/workflow/context.h>
 
@@ -70,6 +71,21 @@ struct ChildOutcome {
   Payloads result;
   std::string failure_type;
   std::string failure_message;
+};
+
+// Terminal workflow-inbound interceptor: runs the real workflow function. The
+// inbound chain wraps this; with no interceptors it is the head and the workflow
+// runs directly (no overhead).
+class RootWorkflowInbound : public interceptor::WorkflowInboundInterceptor {
+ public:
+  explicit RootWorkflowInbound(const worker::WorkflowFn& fn) : fn_(fn) {}
+  Payloads ExecuteWorkflow(workflow::Context& ctx, interceptor::ExecuteWorkflowInput& in,
+                           const interceptor::Header& /*header*/) override {
+    return fn_(ctx, in.args);
+  }
+
+ private:
+  const worker::WorkflowFn& fn_;
 };
 
 // A recorded MutableSideEffect marker, raw payloads (decoded by the runner which
@@ -354,7 +370,8 @@ class WorkflowRunner final : public WorkflowOutbound {
 
   WorkflowRunner(workflow::WorkflowInfo info, std::shared_ptr<log::Logger> logger, bool is_replaying,
                  Prescan scan, const DataConverter* converter, worker::WorkflowFn workflow_fn,
-                 Payloads input, LocalActivityResolver local_activity_resolver = {})
+                 Payloads input, LocalActivityResolver local_activity_resolver = {},
+                 std::vector<interceptor::Interceptor*> interceptors = {})
       : info_(std::move(info)),
         logger_(std::move(logger)),
         is_replaying_(is_replaying),
@@ -362,7 +379,8 @@ class WorkflowRunner final : public WorkflowOutbound {
         converter_(converter),
         workflow_fn_(std::move(workflow_fn)),
         input_(std::move(input)),
-        local_activity_resolver_(std::move(local_activity_resolver)) {
+        local_activity_resolver_(std::move(local_activity_resolver)),
+        interceptors_(std::move(interceptors)) {
     // Surface context-propagation headers (from WorkflowExecutionStarted) on Info.
     info_.headers = scan_.headers;
     // Resolve recorded GetVersion markers up front so GetVersion calls during the
@@ -833,7 +851,13 @@ class WorkflowRunner final : public WorkflowOutbound {
   void RunBody() {
     workflow::Context ctx(this, converter_);
     try {
-      result_ = workflow_fn_(ctx, input_);
+      // Run the workflow through the inbound interceptor chain (terminal = the fn).
+      // The chain + terminal live on the coroutine stack for the workflow's life.
+      RootWorkflowInbound root(workflow_fn_);
+      auto chain = interceptor::BuildWorkflowInboundChain(interceptors_, &root);
+      interceptor::ExecuteWorkflowInput in{input_};
+      interceptor::Header header(info_.headers);
+      result_ = chain.head()->ExecuteWorkflow(ctx, in, header);
       status_ = Status::Completed;
     } catch (const ContinueAsNewRequested& c) {
       continue_as_new_ = c;
@@ -1144,6 +1168,7 @@ class WorkflowRunner final : public WorkflowOutbound {
   std::unordered_map<std::string, Payload> mse_current_;         // current value
   std::size_t local_activity_seq_ = 0;             // ordinal of the next LocalActivity call
   LocalActivityResolver local_activity_resolver_;  // resolves activity fns for inline execution
+  std::vector<interceptor::Interceptor*> interceptors_;  // workflow-inbound chain (non-owning)
   std::unique_ptr<Coroutine> coroutine_;  // declared last -> destroyed first (tears down thread)
 };
 
@@ -1242,7 +1267,7 @@ std::optional<std::string> WorkflowTaskHandler::ReplayHistory(const hist::Histor
   Payloads input = scan.input;
   auto runner = std::make_shared<WorkflowRunner>(info, logger_, /*is_replaying=*/true, std::move(scan),
                                                  converter_.get(), wf->second, std::move(input),
-                                                 local_activity_resolver_);
+                                                 local_activity_resolver_, interceptor_ptrs_);
   runner->Run();
   return runner->CheckDeterminism();
 }
@@ -1348,7 +1373,7 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
     const bool is_replaying = task.previous_started_event_id() > 0;
     runner = std::make_shared<WorkflowRunner>(info, logger_, is_replaying, std::move(scan),
                                               converter_.get(), wf->second, std::move(input),
-                                              local_activity_resolver_);
+                                              local_activity_resolver_, interceptor_ptrs_);
     runner->Run();
     // Non-determinism detection: on a real replay the workflow must reproduce the
     // commands history recorded, in order. Queries are read-only reconstructions

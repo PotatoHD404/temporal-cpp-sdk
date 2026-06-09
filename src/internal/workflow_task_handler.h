@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "temporal/api/history/v1/message.pb.h"
 #include "temporal/api/workflowservice/v1/request_response.pb.h"
@@ -16,6 +17,10 @@
 #include <temporal/converter/data_converter.h>
 #include <temporal/log/logger.h>
 #include <temporal/worker/worker.h>
+
+namespace temporal::interceptor {
+class Interceptor;  // full type in <temporal/interceptor/interceptor.h> (included in the .cpp)
+}  // namespace temporal::interceptor
 
 namespace temporal::internal {
 
@@ -50,6 +55,16 @@ class WorkflowTaskHandler {
     local_activity_resolver_ = std::move(resolver);
   }
 
+  // Install workflow-inbound interceptors (set by the worker from WorkerOptions).
+  void SetInterceptors(std::vector<std::shared_ptr<interceptor::Interceptor>> interceptors) {
+    interceptors_ = std::move(interceptors);
+    interceptor_ptrs_.clear();
+    interceptor_ptrs_.reserve(interceptors_.size());
+    for (const auto& i : interceptors_) {
+      interceptor_ptrs_.push_back(i.get());
+    }
+  }
+
   void Handle(const wsv::PollWorkflowTaskQueueResponse& task);
 
   // Replay a recorded history against the registered workflow and return the
@@ -70,6 +85,8 @@ class WorkflowTaskHandler {
   WorkflowPanicPolicy panic_policy_;
   std::unordered_map<std::string, worker::WorkflowFn> workflows_;
   LocalActivityResolver local_activity_resolver_;
+  std::vector<std::shared_ptr<interceptor::Interceptor>> interceptors_;
+  std::vector<interceptor::Interceptor*> interceptor_ptrs_;  // non-owning, for the chain builder
 
   std::mutex cache_mu_;
   LruCache<std::string, std::shared_ptr<void>> cache_;  // run_id -> WorkflowRunner (LRU-bounded)
