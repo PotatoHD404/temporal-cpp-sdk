@@ -2354,4 +2354,55 @@ TEST_F(IntegrationTest, CronScheduleCreateDescribeDelete) {
   client_->DeleteSchedule(sid);
 }
 
+// A child that sleeps long enough to still be running after its parent closes.
+std::string PclpSleeperChild(temporal::workflow::Context& ctx) {
+  ctx.Sleep(10s);
+  return "child-done";
+}
+
+// Parent starts an Abandon child (caller-provided id) then returns WITHOUT
+// awaiting it.
+std::string PclpAbandonParent(temporal::workflow::Context& ctx, std::string child_id) {
+  temporal::ChildWorkflowOptions co;
+  co.id = child_id;
+  co.parent_close_policy = temporal::ParentClosePolicy::Abandon;
+  ctx.ExecuteChildWorkflow<std::string>(co, "PclpSleeperChild");  // fire-and-forget
+  ctx.Sleep(2s);  // let the child actually start before the parent closes, so Abandon applies
+  return "parent-done";
+}
+
+// POSITIVE: with ParentClosePolicy::Abandon the child outlives the parent — after
+// the parent completes, the child is still running (vs Terminate, which kills it).
+TEST_F(IntegrationTest, ChildParentClosePolicyAbandon) {
+  const auto tq = UniqueTaskQueue("pclp");
+  const auto child_id = "pclp-child-" + std::to_string(std::random_device{}());
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("PclpAbandonParent", PclpAbandonParent);
+  worker.RegisterWorkflow("PclpSleeperChild", PclpSleeperChild);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h = client_->StartWorkflow(o, "PclpAbandonParent", child_id);
+  EXPECT_EQ(h.Result<std::string>(), "parent-done");
+  auto child = client_->GetHandle(child_id);
+  bool running = false;
+  std::string last_status = "<never described>";
+  for (int i = 0; i < 25 && !running; ++i) {
+    try {
+      last_status = child.Describe().status;  // prefix-stripped UPPERCASE enum
+      running = (last_status == "RUNNING");
+    } catch (const temporal::TemporalError& e) {
+      last_status = std::string("<describe threw: ") + e.what() + ">";
+    }
+    if (!running) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+  }
+  EXPECT_TRUE(running) << "abandoned child should still be running; last status: " << last_status;
+  if (running) {
+    child.Terminate("test cleanup");
+  }
+  worker.Stop();
+}
+
 }  // namespace

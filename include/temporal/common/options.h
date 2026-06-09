@@ -99,9 +99,15 @@ struct LocalActivityOptions {
 };
 
 // Options for `workflow::Context::ExecuteChildWorkflow`.
+// What the server does to a still-running child workflow when its parent closes.
+enum class ParentClosePolicy { Terminate, Abandon, RequestCancel };
+
 struct ChildWorkflowOptions {
   std::string id;          // default: "<parent id>_c<seq>"
   std::string task_queue;  // default: the parent's task queue
+  // Fate of a running child when the parent closes: Terminate (default) kills it,
+  // Abandon lets it keep running independently, RequestCancel requests its cancel.
+  ParentClosePolicy parent_close_policy = ParentClosePolicy::Terminate;
 };
 
 // How a worker reacts to a non-deterministic workflow detected during replay

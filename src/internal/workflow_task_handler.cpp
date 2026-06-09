@@ -1128,6 +1128,17 @@ class WorkflowRunner final : public WorkflowOutbound {
     if (!input.empty()) {
       *attr->mutable_input() = ToProtoPayloads(input);
     }
+    switch (options.parent_close_policy) {
+      case ::temporal::ParentClosePolicy::Terminate:
+        attr->set_parent_close_policy(enums::PARENT_CLOSE_POLICY_TERMINATE);
+        break;
+      case ::temporal::ParentClosePolicy::Abandon:
+        attr->set_parent_close_policy(enums::PARENT_CLOSE_POLICY_ABANDON);
+        break;
+      case ::temporal::ParentClosePolicy::RequestCancel:
+        attr->set_parent_close_policy(enums::PARENT_CLOSE_POLICY_REQUEST_CANCEL);
+        break;
+    }
     commands_.push_back(std::move(c));
   }
 
