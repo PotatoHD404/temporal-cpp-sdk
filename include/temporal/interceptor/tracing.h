@@ -28,10 +28,11 @@
 // Tracer to Extract a parent span context. This keeps the on-the-wire shape
 // identical to other SDKs so cross-language traces connect.
 //
-// HONESTY: like the rest of include/temporal/interceptor/, this is a framework.
-// It is NOT yet invoked by client.cpp / worker_impl.cpp — the lead wires the
-// interceptor chain into those call paths. Until then it has no runtime effect,
-// and no real tracing backend is included.
+// The interceptor chain IS wired into the live paths (set via
+// ClientOptions/WorkerOptions::interceptors; worker_impl.cpp installs it and the
+// TracingInterceptorPropagatesTraceWorkflowToActivity integration test exercises
+// workflow->activity propagation). What is bring-your-own is the backend: you
+// supply a Tracer/Span adapter — no OpenTelemetry/Jaeger exporter is bundled.
 namespace temporal::interceptor {
 
 // An opaque, immutable reference to a span's context — enough to be a parent of

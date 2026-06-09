@@ -4,9 +4,12 @@
 const sidebars = {
   docs: [
     'intro',
-    'getting-started',
-    'installation',
-    'tutorial',
+    {
+      type: 'category',
+      label: 'Get started',
+      collapsed: false,
+      items: ['installation', 'getting-started', 'tutorial'],
+    },
     'concepts',
     {
       type: 'category',
@@ -16,17 +19,29 @@ const sidebars = {
         'workflows/overview',
         'workflows/messaging',
         'workflows/composition',
+        'patterns',
       ],
     },
-    'patterns',
-    'client-and-worker',
-    'data-conversion',
-    'error-handling',
-    'advanced',
-    'production',
-    'architecture',
-    'testing',
-    'parity',
+    {
+      type: 'category',
+      label: 'Failure handling',
+      items: ['timeouts-and-retries', 'error-handling', 'cancellation'],
+    },
+    {
+      type: 'category',
+      label: 'Client, workers & scheduling',
+      items: ['client-and-worker', 'schedules', 'data-conversion'],
+    },
+    {
+      type: 'category',
+      label: 'Operate',
+      items: ['observability', 'production', 'testing', 'versioning'],
+    },
+    {
+      type: 'category',
+      label: 'Reference',
+      items: ['advanced', 'architecture', 'parity'],
+    },
   ],
 };
 
