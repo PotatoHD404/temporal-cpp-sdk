@@ -136,6 +136,16 @@ struct ClusterDescription {
   std::string visibility_store;    // e.g. "elasticsearch", "postgres"
 };
 
+// A registered Nexus endpoint, returned by Client::GetNexusEndpoint. (This SDK
+// exposes endpoint *management* only — creating/listing/describing endpoints —
+// not Nexus operation calls or a worker-side Nexus handler.)
+struct NexusEndpointDescription {
+  std::string id;                 // server-assigned endpoint id (opaque)
+  std::string name;               // unique endpoint name
+  std::string target_namespace;   // worker target: namespace that handles ops
+  std::string target_task_queue;  // worker target: task queue that handles ops
+};
+
 // A client connection to the Temporal frontend service. Cheap to copy (shared
 // gRPC channel). Mirrors the Go SDK's `client.Client`.
 class Client {
@@ -237,6 +247,21 @@ class Client {
   // (OperatorService; pages through results). A single-cluster dev server
   // reports just the active cluster.
   std::vector<std::string> ListClusters();
+
+  // Nexus endpoint management (OperatorService). This is a slice of Nexus:
+  // endpoint registration/listing/describe only — NOT Nexus operation calls or
+  // a worker Nexus handler. The dev server may reject these RPCs unless Nexus is
+  // enabled (start-dev --dynamic-config-value system.enableNexus=true), in which
+  // case the call throws RpcError.
+  //
+  // Register a Nexus endpoint named `name` whose target is the worker polling
+  // `target_task_queue` in this client's namespace; returns the new endpoint id.
+  std::string CreateNexusEndpoint(const std::string& name,
+                                  const std::string& target_task_queue);
+  // Look up a single endpoint by its server-assigned id.
+  NexusEndpointDescription GetNexusEndpoint(const std::string& id);
+  // The names of every registered Nexus endpoint (pages through results).
+  std::vector<std::string> ListNexusEndpoints();
 
   // Complete or fail an activity that deferred completion via
   // activity::Context::SetWillCompleteAsync(), identified by its task token

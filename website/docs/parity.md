@@ -117,7 +117,7 @@ cache. This page is the honest accounting.
 | Structured logging | ✅ | pluggable `log::Logger` |
 | Test framework (time-skip, replayer) | 🟡 | replayer ✅ (`Worker::ReplayWorkflowHistory`); time-skip ❌ |
 | Schedules | ✅ | full client lifecycle (create/describe/delete/update/list/trigger/pause); calendar/cron specs ❌ |
-| Nexus operations | ❌ | |
+| Nexus operations | 🟡 | endpoint management (create/get/list via OperatorService) ✅ e2e; Nexus operation calls + worker Nexus handler ❌ |
 
 ## Roadmap {#roadmap}
 

@@ -400,4 +400,31 @@ osv::ListClustersResponse GrpcClient::ListClusters(const osv::ListClustersReques
       });
 }
 
+osv::CreateNexusEndpointResponse GrpcClient::CreateNexusEndpoint(
+    const osv::CreateNexusEndpointRequest& req) {
+  return UnaryCall<osv::CreateNexusEndpointResponse>(
+      "CreateNexusEndpoint", false,
+      [&](grpc::ClientContext* c, osv::CreateNexusEndpointResponse* p) {
+        return operator_stub_->CreateNexusEndpoint(c, req, p);
+      });
+}
+
+osv::GetNexusEndpointResponse GrpcClient::GetNexusEndpoint(
+    const osv::GetNexusEndpointRequest& req) {
+  return UnaryCall<osv::GetNexusEndpointResponse>(
+      "GetNexusEndpoint", false,
+      [&](grpc::ClientContext* c, osv::GetNexusEndpointResponse* p) {
+        return operator_stub_->GetNexusEndpoint(c, req, p);
+      });
+}
+
+osv::ListNexusEndpointsResponse GrpcClient::ListNexusEndpoints(
+    const osv::ListNexusEndpointsRequest& req) {
+  return UnaryCall<osv::ListNexusEndpointsResponse>(
+      "ListNexusEndpoints", false,
+      [&](grpc::ClientContext* c, osv::ListNexusEndpointsResponse* p) {
+        return operator_stub_->ListNexusEndpoints(c, req, p);
+      });
+}
+
 }  // namespace temporal::internal

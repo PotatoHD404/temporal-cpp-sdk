@@ -97,6 +97,10 @@ class GrpcClient {
   osv::RemoveSearchAttributesResponse RemoveSearchAttributes(
       const osv::RemoveSearchAttributesRequest& req);
   osv::ListClustersResponse ListClusters(const osv::ListClustersRequest& req);
+  osv::CreateNexusEndpointResponse CreateNexusEndpoint(
+      const osv::CreateNexusEndpointRequest& req);
+  osv::GetNexusEndpointResponse GetNexusEndpoint(const osv::GetNexusEndpointRequest& req);
+  osv::ListNexusEndpointsResponse ListNexusEndpoints(const osv::ListNexusEndpointsRequest& req);
 
  private:
   // Issues one unary RPC, attaching auth metadata (Authorization + namespace) when

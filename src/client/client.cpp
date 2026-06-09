@@ -737,6 +737,53 @@ std::vector<std::string> Client::ListClusters() {
   return out;
 }
 
+std::string Client::CreateNexusEndpoint(const std::string& name,
+                                        const std::string& target_task_queue) {
+  internal::osv::CreateNexusEndpointRequest req;
+  // The request itself is not namespace-scoped; the namespace lives on the
+  // worker target (EndpointTarget.Worker.namespace).
+  auto* spec = req.mutable_spec();
+  spec->set_name(name);
+  auto* worker = spec->mutable_target()->mutable_worker();
+  worker->set_namespace_(grpc_->ns());
+  worker->set_task_queue(target_task_queue);
+  return grpc_->CreateNexusEndpoint(req).endpoint().id();
+}
+
+NexusEndpointDescription Client::GetNexusEndpoint(const std::string& id) {
+  internal::osv::GetNexusEndpointRequest req;
+  req.set_id(id);
+  const auto resp = grpc_->GetNexusEndpoint(req);
+  const auto& endpoint = resp.endpoint();
+  NexusEndpointDescription out;
+  out.id = endpoint.id();
+  out.name = endpoint.spec().name();
+  out.target_namespace = endpoint.spec().target().worker().namespace_();
+  out.target_task_queue = endpoint.spec().target().worker().task_queue();
+  return out;
+}
+
+std::vector<std::string> Client::ListNexusEndpoints() {
+  std::vector<std::string> out;
+  std::string page_token;
+  for (;;) {
+    // Cluster-scoped: ListNexusEndpoints carries no namespace.
+    internal::osv::ListNexusEndpointsRequest req;
+    if (!page_token.empty()) {
+      req.set_next_page_token(page_token);
+    }
+    const auto resp = grpc_->ListNexusEndpoints(req);
+    for (const auto& endpoint : resp.endpoints()) {
+      out.push_back(endpoint.spec().name());
+    }
+    page_token = resp.next_page_token();
+    if (page_token.empty()) {
+      break;
+    }
+  }
+  return out;
+}
+
 void Client::CompleteActivityPayloads(const std::string& task_token, const Payloads& result) {
   internal::wsv::RespondActivityTaskCompletedRequest req;
   req.set_namespace_(ns_);

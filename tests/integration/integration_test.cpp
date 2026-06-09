@@ -1994,6 +1994,35 @@ TEST_F(IntegrationTest, DeadlockDetectionReportsOverrunningTask) {
   worker.Stop();
 }
 
+// POSITIVE: register a Nexus endpoint (worker target), describe it, and list it.
+// Endpoint management only — not Nexus operation calls or a worker Nexus handler.
+TEST_F(IntegrationTest, NexusEndpointManagement) {
+  const std::string name = "itest-nexus-" + std::to_string(std::random_device{}());
+  std::string id;
+  try {
+    id = client_->CreateNexusEndpoint(name, "nexus-handler-tq");
+  } catch (const temporal::RpcError& e) {
+    GTEST_SKIP() << "Nexus appears disabled on the dev server: " << e.what();
+  }
+  ASSERT_FALSE(id.empty());
+  const auto desc = client_->GetNexusEndpoint(id);
+  EXPECT_EQ(desc.name, name);
+  EXPECT_EQ(desc.target_task_queue, "nexus-handler-tq");
+  bool found = false;
+  for (int i = 0; i < 20 && !found; ++i) {  // creation is eventually consistent
+    for (const auto& n : client_->ListNexusEndpoints()) {
+      if (n == name) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      std::this_thread::sleep_for(200ms);
+    }
+  }
+  EXPECT_TRUE(found);
+}
+
 std::atomic<int> g_client_start_intercepts{0};
 
 class RecordingClientOutbound : public temporal::interceptor::ClientOutboundInterceptor {
