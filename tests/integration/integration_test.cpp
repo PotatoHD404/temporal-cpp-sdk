@@ -43,6 +43,28 @@ std::string EchoWorkflow(temporal::workflow::Context& ctx, std::string s) {
   return ctx.ExecuteActivity<std::string>(o, "Echo", s).Get();
 }
 
+// Creates two host-pinned sessions back to back, running an Echo activity in each
+// on the session host. With a worker capacity of 1 the second CreateSession can
+// only succeed if the first was released by CompleteSession — so a passing result
+// proves both host pinning (the activity ran on the session queue) and the
+// create/complete slot bookkeeping. Returns "<host queue>|<a>|<b>".
+std::string SessionLifecycleWorkflow(temporal::workflow::Context& ctx) {
+  auto s1 = ctx.CreateSession();
+  temporal::ActivityOptions o1;
+  o1.task_queue = s1.task_queue;
+  o1.start_to_close_timeout = 10s;
+  const std::string a = ctx.ExecuteActivity<std::string>(o1, "Echo", std::string("a")).Get();
+  ctx.CompleteSession(s1);
+
+  auto s2 = ctx.CreateSession();
+  temporal::ActivityOptions o2;
+  o2.task_queue = s2.task_queue;
+  o2.start_to_close_timeout = 10s;
+  const std::string b = ctx.ExecuteActivity<std::string>(o2, "Echo", std::string("b")).Get();
+  ctx.CompleteSession(s2);
+  return s1.task_queue + "|" + a + "|" + b;
+}
+
 int ParallelWorkflow(temporal::workflow::Context& ctx, int base) {
   temporal::ActivityOptions o;
   o.start_to_close_timeout = 10s;
@@ -2188,6 +2210,30 @@ TEST_F(IntegrationTest, PollerAutoscalingHandlesBurst) {
     EXPECT_EQ(h.Result<std::string>(), "x");
   }
   worker.Stop();
+}
+
+// POSITIVE: full session lifecycle on one worker with capacity 1 — CreateSession
+// pins to the host, an Echo runs on the session queue, CompleteSession releases
+// the slot so a second session can be created and used. Proves host pinning +
+// create/complete bookkeeping.
+TEST_F(IntegrationTest, SessionLifecyclePinsAndReleases) {
+  const auto tq = UniqueTaskQueue("session");
+  temporal::WorkerOptions wo;
+  wo.enable_sessions = true;
+  wo.max_concurrent_sessions = 1;  // 2nd session only works if the 1st is released
+  temporal::worker::Worker worker(*client_, tq, wo);
+  worker.RegisterWorkflow("SessionLifecycleWorkflow", SessionLifecycleWorkflow);
+  worker.RegisterActivity("Echo", EchoActivity);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h = client_->StartWorkflow(o, "SessionLifecycleWorkflow");
+  const std::string result = h.Result<std::string>();
+  worker.Stop();
+  // "<host queue>|a|b": the host queue is the worker's session queue, and both
+  // in-session activities ran (on that pinned host).
+  EXPECT_NE(result.find("-session-"), std::string::npos);
+  EXPECT_TRUE(result.ends_with("|a|b")) << "got: " << result;
 }
 
 }  // namespace

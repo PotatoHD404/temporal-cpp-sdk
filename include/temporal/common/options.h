@@ -183,12 +183,13 @@ struct WorkerOptions {
   int max_concurrent_pollers = 4;
   int autoscaling_idle_polls_before_park = 5;
 
-  // Session workers (partial). When enabled, the worker additionally long-polls a
-  // host-unique session task queue (derived from the base queue + a per-worker
-  // UUID) so session-pinned activity tasks routed to this host are picked up.
-  // `max_concurrent_sessions` caps activity executions drawn from that queue.
-  // NOTE: full session lifecycle (CreateSession/CompleteSession, sticky pinning)
-  // is not implemented; this only establishes the host-specific routing path.
+  // Session workers (host pinning). When enabled, the worker long-polls a
+  // host-unique session task queue and registers the built-in session
+  // creation/completion activities used by workflow::Context::CreateSession /
+  // CompleteSession. CreateSession reserves a session slot on the handling worker
+  // (bounded by `max_concurrent_sessions`, 0 => unlimited) and returns that
+  // host's session queue, so activities scheduled on it run on the same worker
+  // (e.g. to share host-local files); CompleteSession releases the slot.
   bool enable_sessions = false;
   int max_concurrent_sessions = 0;
 };

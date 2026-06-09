@@ -9,6 +9,7 @@
 #include <utility>
 
 #include <temporal/common/options.h>
+#include <temporal/common/session.h>
 #include <temporal/converter/data_converter.h>
 #include <temporal/internal/callable_traits.h>
 #include <temporal/internal/workflow_outbound.h>
@@ -62,6 +63,39 @@ class Context {
                                  const Args&... args) {
     Payloads input = converter_->ToPayloads(args...);
     return Future<R>(env_->StartChildWorkflow(workflow_type, input, options), converter_, env_);
+  }
+
+  // Create a host-pinned worker session. Runs a built-in creation activity on the
+  // base task queue; the session-enabled worker that handles it returns its
+  // host-unique session queue and reserves a session slot (bounded by the
+  // worker's max_concurrent_sessions). Schedule subsequent activities with
+  // ActivityOptions.task_queue == the returned task_queue to pin them to that one
+  // host — e.g. so a sequence of activities can share host-local files. Pair with
+  // CompleteSession to release the slot. Throws if no worker accepts the creation
+  // activity within creation_timeout (all at capacity / none session-enabled).
+  SessionInfo CreateSession(const SessionOptions& options = {}) {
+    ActivityOptions opts;
+    opts.schedule_to_close_timeout = options.creation_timeout;
+    opts.start_to_close_timeout = options.creation_timeout;
+    const std::string queue =
+        ExecuteActivity<std::string>(opts, kSessionCreationActivityType).Get();
+    return SessionInfo{queue, queue};
+  }
+
+  // End a host-pinned session: runs a built-in completion activity on the
+  // session's host queue, releasing that worker's session slot. Best-effort —
+  // swallows failures (the slot is also freed if the worker restarts).
+  void CompleteSession(const SessionInfo& session) {
+    if (session.task_queue.empty()) {
+      return;
+    }
+    ActivityOptions opts;
+    opts.task_queue = session.task_queue;  // route to the owning host
+    opts.start_to_close_timeout = std::chrono::seconds(10);
+    try {
+      ExecuteActivity<void>(opts, kSessionCompletionActivityType).Get();
+    } catch (...) {  // NOLINT(bugprone-empty-catch): completion is best-effort
+    }
   }
 
   // Block the workflow for `duration` (NewTimer + Get).

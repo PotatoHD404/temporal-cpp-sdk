@@ -48,7 +48,7 @@ cache. This page is the honest accounting.
 | Poller autoscaling | ✅ | demand-driven elasticity: an elastic poller pool scales active pollers between `min_concurrent_pollers` and `max_concurrent_pollers` (a returned task scales up, empty-poll streaks park the excess); unit + e2e tested |
 | Worker Build-ID compatibility (v0.1) | ✅ | `Get/Update/PromoteWorkerBuildIdCompatibility`; e2e-verified |
 | Worker versioning rules / deployments | ✅ | assignment + compatible-redirect rules ✅ e2e; worker deployments: `ListWorkerDeployments` ✅ e2e, `Describe`/`SetWorkerDeploymentCurrentVersion` implemented (need the deployment-versions dynamic config + a live versioned worker to exercise) |
-| Session workers | 🟡 | host-unique session-queue routing + cap; no session lifecycle (create/complete/pin) |
+| Session workers | ✅ | `Context::CreateSession`/`CompleteSession` with host pinning (the creation activity returns the handling host's session queue; later activities scheduled on it run on that worker) + per-worker `max_concurrent_sessions` cap with create/complete slot bookkeeping; e2e-tested. Heartbeat-held long-lived sessions not implemented |
 
 ## Workflow authoring
 

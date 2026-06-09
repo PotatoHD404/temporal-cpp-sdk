@@ -16,6 +16,7 @@
 #include "internal/proto_util.h"
 
 #include <temporal/common/errors.h>
+#include <temporal/common/session.h>
 
 namespace temporal::internal {
 namespace {
@@ -55,6 +56,42 @@ WorkerImpl::WorkerImpl(std::shared_ptr<GrpcClient> grpc, std::shared_ptr<DataCon
   // Inbound interceptors run around every activity / workflow execution.
   activity_handler_.SetInterceptors(options_.interceptors);
   workflow_handler_.SetInterceptors(options_.interceptors);
+  if (options_.enable_sessions) {
+    RegisterSessionActivities();
+  }
+}
+
+void WorkerImpl::RegisterSessionActivities() {
+  // Creation runs on the base queue: reserve a session slot (bounded by
+  // max_concurrent_sessions; a retryable error when full makes the server retry
+  // until a slot frees or creation_timeout elapses) and return THIS worker's
+  // host-unique session queue, pinning the session's later activities here.
+  activity_handler_.Register(
+      kSessionCreationActivityType, [this](activity::Context&, const Payloads&) -> Payloads {
+        const int cap = options_.max_concurrent_sessions;
+        if (cap > 0) {
+          for (int cur = active_sessions_.load();;) {
+            if (cur >= cap) {
+              throw ApplicationError("worker session capacity reached", "SessionCapacityError");
+            }
+            if (active_sessions_.compare_exchange_weak(cur, cur + 1)) {
+              break;
+            }
+          }
+        } else {
+          active_sessions_.fetch_add(1);
+        }
+        return converter_->ToPayloads(session_queue_);
+      });
+  // Completion runs on the host session queue (so it reaches the owning worker):
+  // release one session slot.
+  activity_handler_.Register(kSessionCompletionActivityType,
+                             [this](activity::Context&, const Payloads&) -> Payloads {
+                               int cur = active_sessions_.load();
+                               while (cur > 0 && !active_sessions_.compare_exchange_weak(cur, cur - 1)) {
+                               }
+                               return Payloads{};
+                             });
 }
 
 WorkerImpl::~WorkerImpl() { Stop(); }

@@ -298,6 +298,12 @@ class WorkerImpl {
   // counters, then publishes the cumulative totals + capacity as gauges.
   void EmitStickyCacheMetrics(MetricsHandler* metrics);
 
+  // Registers the built-in session creation/completion activities (host pinning)
+  // when options_.enable_sessions is set. Creation reserves a session slot
+  // (bounded by max_concurrent_sessions) and returns this worker's session queue;
+  // completion releases it.
+  void RegisterSessionActivities();
+
   std::shared_ptr<GrpcClient> grpc_;
   std::shared_ptr<DataConverter> converter_;
   std::shared_ptr<log::Logger> logger_;
@@ -322,6 +328,9 @@ class WorkerImpl {
   // covers the normal activity loops (the single session poller stays always hot).
   PollerScaler wf_scaler_;
   PollerScaler act_scaler_;
+  // Count of open host-pinned sessions on this worker (creation reserves a slot,
+  // completion releases it); bounded by options_.max_concurrent_sessions.
+  std::atomic<int> active_sessions_{0};
   // Last-seen cumulative cache_hits()/replays() from the workflow handler, used
   // to derive per-task sticky-cache hit/miss deltas. Shared by the normal and
   // sticky workflow loops, so reads + updates are serialized by sticky_metrics_mu_.
