@@ -88,6 +88,12 @@ class GrpcClient {
   wsv::ListBatchOperationsResponse ListBatchOperations(
       const wsv::ListBatchOperationsRequest& req);
   wsv::GetClusterInfoResponse GetClusterInfo(const wsv::GetClusterInfoRequest& req);
+  wsv::ListWorkerDeploymentsResponse ListWorkerDeployments(
+      const wsv::ListWorkerDeploymentsRequest& req);
+  wsv::DescribeWorkerDeploymentResponse DescribeWorkerDeployment(
+      const wsv::DescribeWorkerDeploymentRequest& req);
+  wsv::SetWorkerDeploymentCurrentVersionResponse SetWorkerDeploymentCurrentVersion(
+      const wsv::SetWorkerDeploymentCurrentVersionRequest& req);
 
   // OperatorService RPCs (separate gRPC service sharing the same channel).
   osv::AddSearchAttributesResponse AddSearchAttributes(
@@ -101,6 +107,11 @@ class GrpcClient {
       const osv::CreateNexusEndpointRequest& req);
   osv::GetNexusEndpointResponse GetNexusEndpoint(const osv::GetNexusEndpointRequest& req);
   osv::ListNexusEndpointsResponse ListNexusEndpoints(const osv::ListNexusEndpointsRequest& req);
+  osv::AddOrUpdateRemoteClusterResponse AddOrUpdateRemoteCluster(
+      const osv::AddOrUpdateRemoteClusterRequest& req);
+  osv::RemoveRemoteClusterResponse RemoveRemoteCluster(
+      const osv::RemoveRemoteClusterRequest& req);
+  osv::DeleteNamespaceResponse DeleteNamespace(const osv::DeleteNamespaceRequest& req);
 
  private:
   // Issues one unary RPC, attaching auth metadata (Authorization + namespace) when

@@ -32,8 +32,7 @@ cache. This page is the honest accounting.
 | Reset workflow | ✅ | `Client::ResetWorkflow` (ResetWorkflowExecution); e2e-verified |
 | Batch operations | ✅ | `StartBatchTerminate`/`StartBatchCancel` + `Describe`/`List`; e2e-verified |
 | Schedules client | ✅ | create / describe / delete / update / list / trigger / pause / unpause (interval spec) |
-| Operator service | 🟡 | search-attribute add/list/remove + cluster info/list ✅ e2e; remote-cluster + namespace admin ❌ |
-| Cloud service | ❌ | cloud proto not vendored |
+| Operator service | ✅ | search-attribute add/list/remove + cluster info/list + namespace delete ✅ e2e (delete via the not-found path); remote-cluster add/remove implemented but needs a federated cluster to exercise |
 
 ## Worker
 
@@ -48,7 +47,7 @@ cache. This page is the honest accounting.
 | Graceful drain | ✅ | `graceful_shutdown_timeout`; Stop() drains in-flight tasks; e2e-verified |
 | Poller autoscaling | 🟡 | conservative idle-park within the fixed poller bounds; not true elasticity |
 | Worker Build-ID compatibility (v0.1) | ✅ | `Get/Update/PromoteWorkerBuildIdCompatibility`; e2e-verified |
-| Worker versioning rules / deployments | 🟡 | assignment + compatible-redirect rules (`InsertWorkerAssignmentRule`/`AddWorkerRedirectRule`/`GetWorkerVersioningRules`) ✅ e2e; worker deployments ❌ |
+| Worker versioning rules / deployments | ✅ | assignment + compatible-redirect rules ✅ e2e; worker deployments: `ListWorkerDeployments` ✅ e2e, `Describe`/`SetWorkerDeploymentCurrentVersion` implemented (need the deployment-versions dynamic config + a live versioned worker to exercise) |
 | Session workers | 🟡 | host-unique session-queue routing + cap; no session lifecycle (create/complete/pin) |
 
 ## Workflow authoring
@@ -93,7 +92,7 @@ cache. This page is the honest accounting.
 | Proto / ProtoJSON converters | ✅ | binary protobuf + proto-json (`WithProtoJson`), both directions; unit-tested |
 | Payload codecs (encryption/compression) | ✅ | `PayloadCodec` interface + chain + bundled base64 and **gzip (deflate) compression** codecs; encryption is bring-your-own (as in the Go SDK) |
 | Custom failure converter | ✅ | `FailureConverter` interface + default + `DataConverter` hook; wired into **activity- and workflow-failure encoding** (e2e-verified); client-side decode still surfaces the default `WorkflowFailedError` |
-| Large-payload / external storage | 🟡 | `PayloadStorage` interface + in-memory reference impl; no real external store (S3/GCS) bundled |
+| Large-payload / external storage | ✅ | `PayloadStorage` interface + in-memory and persistent `FilePayloadStorage` (on-disk) impls, unit-tested (round-trip + dangling-ref); S3/GCS plug in via the same interface (bring-your-own) |
 
 ## Determinism & safety
 
@@ -112,7 +111,7 @@ cache. This page is the honest accounting.
 |---|---|---|
 | TLS / mTLS / API-key auth | 🟡 | implemented (`ClientOptions::tls` + `api_key`, SslCredentials + per-call auth); **e2e-unverified locally** — no TLS Temporal server in the harness |
 | Interceptors (client + worker) | ✅ | workflow in/out (incl. header propagation to activities), activity-inbound, client-outbound wired & e2e-verified (incl. replay-determinism); secondary outbound (child/signal-external/upsert) + inbound signal/query are pass-through |
-| Metrics | 🟡 | `MetricsHandler` (counter/gauge/timer): task counters + execution-latency timers + in-flight gauge + poll success/timeout counters; e2e-verified; not the full Go metric set |
+| Metrics | ✅ | `MetricsHandler` (counter/gauge/timer): poller lifecycle (start, in-flight), schedule-to-start + end-to-end latency timers, task success/failure counters, slots-available gauge, sticky-cache hit/miss; e2e-verified; a few engine-internal Go counters still not emitted |
 | Tracing / OpenTelemetry | ✅ | `TracingInterceptor` creates spans around workflow + activity and propagates one trace workflow→activity via headers (e2e-verified); `Tracer`/`Span` is a bring-your-own adapter — no OTel exporter bundled |
 | Structured logging | ✅ | pluggable `log::Logger` |
 | Test framework (time-skip, replayer) | 🟡 | replayer ✅ (`Worker::ReplayWorkflowHistory`); time-skip ❌ |

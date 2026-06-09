@@ -2085,4 +2085,83 @@ TEST_F(IntegrationTest, AddAndReadWorkerRedirectRule) {
   EXPECT_TRUE(found);
 }
 
+// Captures the broadened worker metric set to assert the new names fire.
+class BroadMetrics : public temporal::MetricsHandler {
+ public:
+  void Counter(const std::string& n, std::int64_t v, const Tags& t) override {
+    if (n == "temporal_poller_start") {
+      poller_starts += v;
+      if (t.count("poller_type")) {
+        saw_poller_type = true;
+      }
+    }
+    if (n == "temporal_sticky_cache_hit" || n == "temporal_sticky_cache_miss") {
+      cache_events += v;
+    }
+  }
+  void Gauge(const std::string& n, double v, const Tags&) override {
+    if (n == "temporal_pollers_in_flight" && v >= 1.0) {
+      saw_pollers_in_flight = true;
+    }
+    if (n == "temporal_worker_task_slots_available") {
+      saw_slots = true;
+    }
+  }
+  void Timer(const std::string& n, std::chrono::nanoseconds d, const Tags&) override {
+    if (n == "temporal_workflow_task_end_to_end_latency" && d.count() > 0) {
+      saw_wf_e2e = true;
+    }
+    if (n == "temporal_activity_task_end_to_end_latency" && d.count() > 0) {
+      saw_act_e2e = true;
+    }
+  }
+  std::atomic<std::int64_t> poller_starts{0};
+  std::atomic<std::int64_t> cache_events{0};
+  std::atomic<bool> saw_poller_type{false};
+  std::atomic<bool> saw_pollers_in_flight{false};
+  std::atomic<bool> saw_slots{false};
+  std::atomic<bool> saw_wf_e2e{false};
+  std::atomic<bool> saw_act_e2e{false};
+};
+
+// POSITIVE: the broadened worker metric set fires on a simple Echo round-trip.
+TEST_F(IntegrationTest, MetricsHandlerReceivesBroadenedSet) {
+  const auto tq = UniqueTaskQueue("metrics-broad");
+  auto m = std::make_shared<BroadMetrics>();
+  temporal::WorkerOptions wo;
+  wo.metrics_handler = m;
+  wo.max_concurrent_activity_executions = 4;  // bound caps so slots-available emits
+  wo.max_concurrent_workflow_task_executions = 4;
+  temporal::worker::Worker worker(*client_, tq, wo);
+  worker.RegisterWorkflow("EchoWorkflow", EchoWorkflow);
+  worker.RegisterActivity("Echo", EchoActivity);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h = client_->StartWorkflow(o, "EchoWorkflow", std::string("hi"));
+  EXPECT_EQ(h.Result<std::string>(), "hi");
+  EXPECT_GT(m->poller_starts.load(), 0);
+  EXPECT_TRUE(m->saw_poller_type.load());
+  EXPECT_TRUE(m->saw_pollers_in_flight.load());
+  EXPECT_TRUE(m->saw_slots.load());
+  EXPECT_TRUE(m->saw_wf_e2e.load());
+  EXPECT_TRUE(m->saw_act_e2e.load());
+  EXPECT_GT(m->cache_events.load(), 0);
+  worker.Stop();
+}
+
+// POSITIVE: a fresh dev server has no worker deployments; ListWorkerDeployments
+// pages cleanly and returns an (empty) vector.
+TEST_F(IntegrationTest, ListWorkerDeploymentsReturnsVector) {
+  const auto names = client_->ListWorkerDeployments();
+  EXPECT_TRUE(names.empty());
+}
+
+// NEGATIVE: deleting a namespace that doesn't exist exercises the real
+// DeleteNamespace RPC path and surfaces a server error.
+TEST_F(IntegrationTest, DeleteNamespaceUnknownThrows) {
+  const auto missing = "ns-nope-" + std::to_string(std::random_device{}());
+  EXPECT_THROW(client_->DeleteNamespace(missing), temporal::RpcError);
+}
+
 }  // namespace

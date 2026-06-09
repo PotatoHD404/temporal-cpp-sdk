@@ -147,6 +147,17 @@ struct NexusEndpointDescription {
   std::string target_task_queue;  // worker target: task queue that handles ops
 };
 
+// A worker deployment's name and its current routing config, returned by
+// Client::DescribeWorkerDeployment. (Worker Deployments are the modern
+// versioning API; the build ids reflect RoutingConfig.current/ramping
+// deployment version — empty when no version is current/ramping.)
+struct WorkerDeploymentDescription {
+  std::string name;                   // deployment name
+  std::string current_version_build_id;  // build id of the current version (may be empty)
+  std::string ramping_version_build_id;  // build id of the ramping version (may be empty)
+  std::string conflict_token;  // bytes; opaque, pass to SetWorkerDeploymentCurrentVersion
+};
+
 // A client connection to the Temporal frontend service. Cheap to copy (shared
 // gRPC channel). Mirrors the Go SDK's `client.Client`.
 class Client {
@@ -267,6 +278,38 @@ class Client {
   NexusEndpointDescription GetNexusEndpoint(const std::string& id);
   // The names of every registered Nexus endpoint (pages through results).
   std::vector<std::string> ListNexusEndpoints();
+
+  // Worker Deployments (the modern worker-versioning API; WorkflowService).
+  // The dev server may require deployment dynamic config for the mutating call
+  // (start-dev --dynamic-config-value system.enableDeploymentVersions=true).
+  //
+  // The names of every worker deployment in the namespace (pages through
+  // results). Empty on a fresh server with no versioned workers.
+  std::vector<std::string> ListWorkerDeployments();
+  // Current routing config for a single deployment by name. Throws RpcError
+  // (NOT_FOUND) if no deployment with that name exists.
+  WorkerDeploymentDescription DescribeWorkerDeployment(const std::string& name);
+  // Promote `build_id` to be the current version of `deployment_name`. The
+  // server enforces optimistic concurrency: pass the `conflict_token` from a
+  // prior DescribeWorkerDeployment (empty is accepted as "no expectation").
+  // Returns the new conflict token. (Requires an existing deployment + the
+  // deployment-versions dynamic config above; not exercised by a fresh server.)
+  std::string SetWorkerDeploymentCurrentVersion(const std::string& deployment_name,
+                                                const std::string& build_id,
+                                                const std::string& conflict_token = "");
+
+  // Cluster federation / namespace lifecycle (OperatorService, admin-scoped).
+  // Register or update a remote Temporal cluster for multi-cluster replication,
+  // reachable at `frontend_address` (host:port). Requires a real second cluster
+  // and global-namespace config — not exercisable against a single dev server.
+  void AddOrUpdateRemoteCluster(const std::string& frontend_address, bool enable_connection);
+  // Deregister a previously added remote cluster by its cluster name. Also
+  // requires a multi-cluster setup.
+  void RemoveRemoteCluster(const std::string& cluster_name);
+  // Delete a namespace (asynchronous, irreversible). Returns the server-side
+  // name of the namespace marked for deletion (a unique suffix is appended).
+  // Throws RpcError (NOT_FOUND) if the namespace does not exist.
+  std::string DeleteNamespace(const std::string& namespace_name);
 
   // Complete or fail an activity that deferred completion via
   // activity::Context::SetWillCompleteAsync(), identified by its task token

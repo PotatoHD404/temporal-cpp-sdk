@@ -118,6 +118,24 @@ class InMemoryPayloadStorage : public PayloadStorage {
   mutable std::map<std::string, std::string> blobs_;
 };
 
+// File-backed reference store: a real external store on the local filesystem.
+// Store() writes the body to a file under `dir` named by a content hash (the same
+// hashing scheme as InMemoryPayloadStorage) and returns a reference payload using
+// the identical reference marker, so the two are interchangeable; Resolve() reads
+// the body back. Inner metadata (encoding, message type, …) is preserved. An
+// S3/GCS backend would implement this same PayloadStorage interface; the local FS
+// here makes the large-payload offload genuinely durable across the process.
+class FilePayloadStorage : public PayloadStorage {
+ public:
+  explicit FilePayloadStorage(std::string dir);
+
+  Payload Store(const Payload& payload) const override;
+  Payload Resolve(const Payload& payload) const override;
+
+ private:
+  std::string dir_;
+};
+
 namespace detail {
 // Detects a protobuf-generated message via its own member functions, so this
 // header never has to include the protobuf runtime. Proto values then encode as

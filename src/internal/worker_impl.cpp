@@ -179,8 +179,49 @@ void WorkerImpl::Stop() {
   threads_.clear();
 }
 
+void WorkerImpl::EmitStickyCacheMetrics(MetricsHandler* metrics) {
+  // cache_hits() = continuations served from the sticky cache (a cache HIT);
+  // replays() = full from-scratch replays (a cache MISS). Both are cumulative and
+  // shared by the normal + sticky loops, so derive deltas under a mutex to avoid
+  // double-counting, then emit the running totals as gauges.
+  const long hits = workflow_handler_.cache_hits();
+  const long misses = workflow_handler_.replays();
+  long hit_delta = 0;
+  long miss_delta = 0;
+  {
+    const std::lock_guard<std::mutex> lock(sticky_metrics_mu_);
+    hit_delta = hits - last_cache_hits_;
+    miss_delta = misses - last_replays_;
+    last_cache_hits_ = hits;
+    last_replays_ = misses;
+  }
+  const MetricsHandler::Tags tags{{"task_queue", task_queue_}};
+  if (hit_delta > 0) {
+    metrics->Counter("temporal_sticky_cache_hit", hit_delta, tags);
+  }
+  if (miss_delta > 0) {
+    metrics->Counter("temporal_sticky_cache_miss", miss_delta, tags);
+  }
+  metrics->Gauge("temporal_sticky_cache_total_hits", static_cast<double>(hits), tags);
+  metrics->Gauge("temporal_sticky_cache_total_misses", static_cast<double>(misses), tags);
+  // No public accessor exposes the cache's resident entry count, so report the
+  // configured capacity (when bounded) as the cache-size gauge.
+  if (options_.max_cached_workflows > 0) {
+    metrics->Gauge("temporal_sticky_cache_size",
+                   static_cast<double>(options_.max_cached_workflows), tags);
+  }
+}
+
 void WorkerImpl::WorkflowPollLoop(bool sticky) {
   auto* metrics = options_.metrics_handler.get();
+  const MetricsHandler::Tags poller_tags{{"task_queue", task_queue_},
+                                         {"poller_type", sticky ? "sticky" : "workflow"}};
+  const MetricsHandler::Tags wf_tags{{"task_queue", task_queue_}};
+  if (metrics) {
+    metrics->Counter("temporal_poller_start", 1, poller_tags);
+    metrics->Gauge("temporal_pollers_in_flight",
+                   static_cast<double>(wf_hot_pollers_.load()), wf_tags);
+  }
   int empty_streak = 0;
   while (!stop_.load()) {
     try {
@@ -196,6 +237,7 @@ void WorkerImpl::WorkflowPollLoop(bool sticky) {
       }
       req.set_identity(grpc_->identity());
       const auto resp = grpc_->PollWorkflowTaskQueue(req);
+      const auto recv = std::chrono::steady_clock::now();
       if (stop_.load()) {
         break;
       }
@@ -227,8 +269,20 @@ void WorkerImpl::WorkflowPollLoop(bool sticky) {
       if (metrics) {
         metrics->Gauge("temporal_workflow_tasks_in_flight",
                        static_cast<double>(workflow_gate_.in_flight()), {});
+        // Slots available = configured cap minus in-flight (only when bounded).
+        const int cap = options_.max_concurrent_workflow_task_executions;
+        if (cap > 0) {
+          metrics->Gauge("temporal_worker_task_slots_available",
+                         static_cast<double>(cap - workflow_gate_.in_flight()),
+                         MetricsHandler::Tags{{"task_queue", task_queue_},
+                                              {"worker_type", "workflow"}});
+        }
       }
       const auto start = std::chrono::steady_clock::now();
+      if (metrics) {
+        // Time the task waited locally (gate/rate) between receipt and execution.
+        metrics->Timer("temporal_workflow_task_schedule_to_start_latency", start - recv, wf_tags);
+      }
       const bool watch = options_.deadlock_detection_timeout.count() > 0;
       if (watch) {
         deadlock_watch_.Begin();
@@ -238,14 +292,19 @@ void WorkerImpl::WorkflowPollLoop(bool sticky) {
         deadlock_watch_.End();
       }
       if (metrics) {
-        metrics->Timer("temporal_workflow_task_execution_latency",
-                       std::chrono::steady_clock::now() - start, {});
+        const auto now = std::chrono::steady_clock::now();
+        metrics->Timer("temporal_workflow_task_execution_latency", now - start, {});
+        metrics->Timer("temporal_workflow_task_end_to_end_latency", now - recv, wf_tags);
         metrics->Counter("temporal_workflow_task_handled", 1, {});
+        EmitStickyCacheMetrics(metrics);
       }
     } catch (const std::exception& e) {
       deadlock_watch_.End();  // clear this thread's entry if Handle threw
       if (stop_.load()) {
         break;
+      }
+      if (metrics) {
+        metrics->Counter("temporal_workflow_task_failed", 1, wf_tags);
       }
       logger_->Error("workflow poll loop error", {log::F("error", e.what())});
       std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -282,6 +341,14 @@ void WorkerImpl::ActivityPollLoop(bool session) {
   // Session activities draw permits from a dedicated gate so they can be capped
   // independently of normal activity executions.
   ConcurrencyGate& gate = session ? session_gate_ : activity_gate_;
+  const MetricsHandler::Tags poller_tags{{"task_queue", task_queue_},
+                                         {"poller_type", session ? "session" : "activity"}};
+  const MetricsHandler::Tags act_tags{{"task_queue", task_queue_}};
+  if (metrics) {
+    metrics->Counter("temporal_poller_start", 1, poller_tags);
+    metrics->Gauge("temporal_pollers_in_flight",
+                   static_cast<double>(act_hot_pollers_.load()), act_tags);
+  }
   int empty_streak = 0;
   while (!stop_.load()) {
     try {
@@ -291,6 +358,7 @@ void WorkerImpl::ActivityPollLoop(bool session) {
       req.mutable_task_queue()->set_kind(enums::TASK_QUEUE_KIND_NORMAL);
       req.set_identity(grpc_->identity());
       const auto resp = grpc_->PollActivityTaskQueue(req);
+      const auto recv = std::chrono::steady_clock::now();
       if (stop_.load()) {
         break;
       }
@@ -324,17 +392,34 @@ void WorkerImpl::ActivityPollLoop(bool session) {
       if (metrics) {
         metrics->Gauge("temporal_activity_tasks_in_flight",
                        static_cast<double>(gate.in_flight()), {});
+        // Slots available = configured cap minus in-flight (only when bounded).
+        const int cap = session ? options_.max_concurrent_sessions
+                                 : options_.max_concurrent_activity_executions;
+        if (cap > 0) {
+          metrics->Gauge("temporal_worker_task_slots_available",
+                         static_cast<double>(cap - gate.in_flight()),
+                         MetricsHandler::Tags{{"task_queue", task_queue_},
+                                              {"worker_type", session ? "session" : "activity"}});
+        }
       }
       const auto start = std::chrono::steady_clock::now();
+      if (metrics) {
+        // Time the task waited locally (gate/rate) between receipt and execution.
+        metrics->Timer("temporal_activity_task_schedule_to_start_latency", start - recv, act_tags);
+      }
       activity_handler_.Handle(resp);
       if (metrics) {
-        metrics->Timer("temporal_activity_task_execution_latency",
-                       std::chrono::steady_clock::now() - start, {});
+        const auto now = std::chrono::steady_clock::now();
+        metrics->Timer("temporal_activity_task_execution_latency", now - start, {});
+        metrics->Timer("temporal_activity_task_end_to_end_latency", now - recv, act_tags);
         metrics->Counter("temporal_activity_task_handled", 1, {});
       }
     } catch (const std::exception& e) {
       if (stop_.load()) {
         break;
+      }
+      if (metrics) {
+        metrics->Counter("temporal_activity_task_failed", 1, act_tags);
       }
       logger_->Error("activity poll loop error", {log::F("error", e.what())});
       std::this_thread::sleep_for(std::chrono::seconds(1));

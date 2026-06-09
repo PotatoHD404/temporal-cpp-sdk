@@ -365,6 +365,33 @@ wsv::GetClusterInfoResponse GrpcClient::GetClusterInfo(const wsv::GetClusterInfo
       });
 }
 
+wsv::ListWorkerDeploymentsResponse GrpcClient::ListWorkerDeployments(
+    const wsv::ListWorkerDeploymentsRequest& req) {
+  return UnaryCall<wsv::ListWorkerDeploymentsResponse>(
+      "ListWorkerDeployments", false,
+      [&](grpc::ClientContext* c, wsv::ListWorkerDeploymentsResponse* p) {
+        return stub_->ListWorkerDeployments(c, req, p);
+      });
+}
+
+wsv::DescribeWorkerDeploymentResponse GrpcClient::DescribeWorkerDeployment(
+    const wsv::DescribeWorkerDeploymentRequest& req) {
+  return UnaryCall<wsv::DescribeWorkerDeploymentResponse>(
+      "DescribeWorkerDeployment", false,
+      [&](grpc::ClientContext* c, wsv::DescribeWorkerDeploymentResponse* p) {
+        return stub_->DescribeWorkerDeployment(c, req, p);
+      });
+}
+
+wsv::SetWorkerDeploymentCurrentVersionResponse GrpcClient::SetWorkerDeploymentCurrentVersion(
+    const wsv::SetWorkerDeploymentCurrentVersionRequest& req) {
+  return UnaryCall<wsv::SetWorkerDeploymentCurrentVersionResponse>(
+      "SetWorkerDeploymentCurrentVersion", false,
+      [&](grpc::ClientContext* c, wsv::SetWorkerDeploymentCurrentVersionResponse* p) {
+        return stub_->SetWorkerDeploymentCurrentVersion(c, req, p);
+      });
+}
+
 osv::AddSearchAttributesResponse GrpcClient::AddSearchAttributes(
     const osv::AddSearchAttributesRequest& req) {
   return UnaryCall<osv::AddSearchAttributesResponse>(
@@ -424,6 +451,32 @@ osv::ListNexusEndpointsResponse GrpcClient::ListNexusEndpoints(
       "ListNexusEndpoints", false,
       [&](grpc::ClientContext* c, osv::ListNexusEndpointsResponse* p) {
         return operator_stub_->ListNexusEndpoints(c, req, p);
+      });
+}
+
+osv::AddOrUpdateRemoteClusterResponse GrpcClient::AddOrUpdateRemoteCluster(
+    const osv::AddOrUpdateRemoteClusterRequest& req) {
+  return UnaryCall<osv::AddOrUpdateRemoteClusterResponse>(
+      "AddOrUpdateRemoteCluster", false,
+      [&](grpc::ClientContext* c, osv::AddOrUpdateRemoteClusterResponse* p) {
+        return operator_stub_->AddOrUpdateRemoteCluster(c, req, p);
+      });
+}
+
+osv::RemoveRemoteClusterResponse GrpcClient::RemoveRemoteCluster(
+    const osv::RemoveRemoteClusterRequest& req) {
+  return UnaryCall<osv::RemoveRemoteClusterResponse>(
+      "RemoveRemoteCluster", false,
+      [&](grpc::ClientContext* c, osv::RemoveRemoteClusterResponse* p) {
+        return operator_stub_->RemoveRemoteCluster(c, req, p);
+      });
+}
+
+osv::DeleteNamespaceResponse GrpcClient::DeleteNamespace(const osv::DeleteNamespaceRequest& req) {
+  return UnaryCall<osv::DeleteNamespaceResponse>(
+      "DeleteNamespace", false,
+      [&](grpc::ClientContext* c, osv::DeleteNamespaceResponse* p) {
+        return operator_stub_->DeleteNamespace(c, req, p);
       });
 }
 

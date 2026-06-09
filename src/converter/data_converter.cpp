@@ -3,10 +3,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <ios>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -381,6 +386,78 @@ Payload InMemoryPayloadStorage::Resolve(const Payload& payload) const {
   }
   Payload out = payload;
   out.data = blob->second;  // restore body
+  out.metadata.erase(kRemoteRefKey);
+  return out;
+}
+
+namespace {
+
+// Same key derivation as InMemoryPayloadStorage so identical bodies coalesce onto
+// one blob (here, one file) and the two stores stay interchangeable.
+std::string PayloadStorageKey(const Payload& payload) {
+  return std::to_string(std::hash<std::string>{}(payload.data)) + "-" +
+         std::to_string(payload.data.size());
+}
+
+}  // namespace
+
+FilePayloadStorage::FilePayloadStorage(std::string dir) : dir_(std::move(dir)) {}
+
+Payload FilePayloadStorage::Store(const Payload& payload) const {
+  const std::string key = PayloadStorageKey(payload);
+  const std::filesystem::path dir(dir_);
+  const std::filesystem::path file = dir / key;
+
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  if (ec) {
+    throw DataConverterError("payload storage: cannot create directory " + dir_ +
+                             ": " + ec.message());
+  }
+
+  // Binary mode so the raw bytes round-trip unchanged on every platform.
+  std::ofstream out(file, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    throw DataConverterError("payload storage: cannot open file for writing: " +
+                             file.string());
+  }
+  out.write(payload.data.data(), static_cast<std::streamsize>(payload.data.size()));
+  out.flush();
+  if (!out) {
+    throw DataConverterError("payload storage: failed to write file: " + file.string());
+  }
+
+  Payload ref = payload;  // preserve inner metadata (encoding, message type, …)
+  ref.metadata[kRemoteRefKey] = key;
+  ref.data = key;  // body replaced by its reference (the file name)
+  return ref;
+}
+
+Payload FilePayloadStorage::Resolve(const Payload& payload) const {
+  const auto it = payload.metadata.find(kRemoteRefKey);
+  if (it == payload.metadata.end()) {
+    return payload;  // not a reference produced by this store
+  }
+  const std::filesystem::path file = std::filesystem::path(dir_) / it->second;
+
+  std::error_code ec;
+  if (!std::filesystem::exists(file, ec) || ec) {
+    throw DataConverterError("payload storage reference not found: " + file.string());
+  }
+
+  std::ifstream in(file, std::ios::binary);
+  if (!in) {
+    throw DataConverterError("payload storage: cannot open file for reading: " +
+                             file.string());
+  }
+  std::string body((std::istreambuf_iterator<char>(in)),
+                   std::istreambuf_iterator<char>());
+  if (in.bad()) {
+    throw DataConverterError("payload storage: failed to read file: " + file.string());
+  }
+
+  Payload out = payload;
+  out.data = std::move(body);  // restore body
   out.metadata.erase(kRemoteRefKey);
   return out;
 }

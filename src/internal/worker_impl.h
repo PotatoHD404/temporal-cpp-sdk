@@ -210,6 +210,13 @@ class WorkerImpl {
   void ActivityPollLoop(bool session);
   void DeadlockWatchLoop();  // reports workflow tasks that overrun the deadline
 
+  // Emits the sticky-cache metrics after a workflow task is handled. The handler
+  // exposes only cumulative cache_hits()/replays() counters shared by every
+  // workflow poll loop, so this converts them into per-task deltas under a mutex
+  // (so the normal + sticky loops never race or double-count) for the hit/miss
+  // counters, then publishes the cumulative totals + capacity as gauges.
+  void EmitStickyCacheMetrics(MetricsHandler* metrics);
+
   std::shared_ptr<GrpcClient> grpc_;
   std::shared_ptr<DataConverter> converter_;
   std::shared_ptr<log::Logger> logger_;
@@ -234,6 +241,12 @@ class WorkerImpl {
   // options_.min_concurrent_pollers, so the queue is never left unpolled.
   std::atomic<int> wf_hot_pollers_{0};
   std::atomic<int> act_hot_pollers_{0};
+  // Last-seen cumulative cache_hits()/replays() from the workflow handler, used
+  // to derive per-task sticky-cache hit/miss deltas. Shared by the normal and
+  // sticky workflow loops, so reads + updates are serialized by sticky_metrics_mu_.
+  std::mutex sticky_metrics_mu_;
+  long last_cache_hits_{0};
+  long last_replays_{0};
   std::vector<std::thread> threads_;
 };
 

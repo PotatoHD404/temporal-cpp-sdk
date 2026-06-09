@@ -800,6 +800,78 @@ std::vector<std::string> Client::ListNexusEndpoints() {
   return out;
 }
 
+std::vector<std::string> Client::ListWorkerDeployments() {
+  std::vector<std::string> out;
+  std::string page_token;
+  for (;;) {
+    internal::wsv::ListWorkerDeploymentsRequest req;
+    req.set_namespace_(ns_);
+    if (!page_token.empty()) {
+      req.set_next_page_token(page_token);
+    }
+    const auto resp = grpc_->ListWorkerDeployments(req);
+    for (const auto& summary : resp.worker_deployments()) {
+      out.push_back(summary.name());
+    }
+    page_token = resp.next_page_token();
+    if (page_token.empty()) {
+      break;
+    }
+  }
+  return out;
+}
+
+WorkerDeploymentDescription Client::DescribeWorkerDeployment(const std::string& name) {
+  internal::wsv::DescribeWorkerDeploymentRequest req;
+  req.set_namespace_(ns_);
+  req.set_deployment_name(name);
+  const auto resp = grpc_->DescribeWorkerDeployment(req);
+  const auto& info = resp.worker_deployment_info();
+  WorkerDeploymentDescription out;
+  out.name = info.name();
+  // Read the non-deprecated structured versions (the flat version strings on
+  // RoutingConfig are deprecated). Build ids are empty when unset.
+  out.current_version_build_id = info.routing_config().current_deployment_version().build_id();
+  out.ramping_version_build_id = info.routing_config().ramping_deployment_version().build_id();
+  out.conflict_token = resp.conflict_token();
+  return out;
+}
+
+std::string Client::SetWorkerDeploymentCurrentVersion(const std::string& deployment_name,
+                                                      const std::string& build_id,
+                                                      const std::string& conflict_token) {
+  internal::wsv::SetWorkerDeploymentCurrentVersionRequest req;
+  req.set_namespace_(ns_);
+  req.set_deployment_name(deployment_name);
+  req.set_build_id(build_id);
+  req.set_identity(identity_);
+  if (!conflict_token.empty()) {
+    req.set_conflict_token(conflict_token);
+  }
+  return grpc_->SetWorkerDeploymentCurrentVersion(req).conflict_token();
+}
+
+void Client::AddOrUpdateRemoteCluster(const std::string& frontend_address, bool enable_connection) {
+  // Cluster-scoped: the request carries no namespace.
+  internal::osv::AddOrUpdateRemoteClusterRequest req;
+  req.set_frontend_address(frontend_address);
+  req.set_enable_remote_cluster_connection(enable_connection);
+  grpc_->AddOrUpdateRemoteCluster(req);
+}
+
+void Client::RemoveRemoteCluster(const std::string& cluster_name) {
+  // Cluster-scoped: the request carries no namespace.
+  internal::osv::RemoveRemoteClusterRequest req;
+  req.set_cluster_name(cluster_name);
+  grpc_->RemoveRemoteCluster(req);
+}
+
+std::string Client::DeleteNamespace(const std::string& namespace_name) {
+  internal::osv::DeleteNamespaceRequest req;
+  req.set_namespace_(namespace_name);
+  return grpc_->DeleteNamespace(req).deleted_namespace();
+}
+
 void Client::CompleteActivityPayloads(const std::string& task_token, const Payloads& result) {
   internal::wsv::RespondActivityTaskCompletedRequest req;
   req.set_namespace_(ns_);
