@@ -109,7 +109,7 @@ cache. This page is the honest accounting.
 
 | Capability | Status | Notes |
 |---|---|---|
-| TLS / mTLS / API-key auth | 🟡 | implemented (`ClientOptions::tls` + `api_key`, SslCredentials + per-call auth); **e2e-unverified locally** — no TLS Temporal server in the harness |
+| TLS / mTLS / API-key auth | ✅ | `ClientOptions::tls` + `api_key` (SslCredentials, mTLS client cert, SNI/cert-name override, `Authorization: Bearer` metadata); verified by an in-process TLS gRPC server test (server-TLS + api-key, and mutual-TLS). Not yet exercised against a real Temporal server (none with TLS in the harness) |
 | Interceptors (client + worker) | ✅ | workflow in/out (incl. header propagation to activities), activity-inbound, client-outbound wired & e2e-verified (incl. replay-determinism); secondary outbound (child/signal-external/upsert) + inbound signal/query are pass-through |
 | Metrics | ✅ | `MetricsHandler` (counter/gauge/timer): poller lifecycle (start, in-flight), schedule-to-start + end-to-end latency timers, task success/failure counters, slots-available gauge, sticky-cache hit/miss; e2e-verified; a few engine-internal Go counters still not emitted |
 | Tracing / OpenTelemetry | ✅ | `TracingInterceptor` creates spans around workflow + activity and propagates one trace workflow→activity via headers (e2e-verified); `Tracer`/`Span` is a bring-your-own adapter — no OTel exporter bundled |
