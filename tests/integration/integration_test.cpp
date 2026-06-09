@@ -1956,6 +1956,44 @@ TEST_F(IntegrationTest, CustomFailureConverterEncodesWorkflowFailure) {
   worker.Stop();
 }
 
+std::atomic<int> g_deadlock_metric{0};
+class DeadlockMetrics : public temporal::MetricsHandler {
+ public:
+  void Counter(const std::string& n, std::int64_t v, const Tags&) override {
+    if (n == "temporal_workflow_task_deadlock") {
+      g_deadlock_metric += static_cast<int>(v);
+    }
+  }
+  void Gauge(const std::string&, double, const Tags&) override {}
+  void Timer(const std::string&, std::chrono::nanoseconds, const Tags&) override {}
+};
+
+// Blocks the workflow thread (a real sleep — forbidden in real workflows, used
+// here to simulate a deadlock/blocking call).
+std::string BlockingWorkflow(temporal::workflow::Context&, int ms) {
+  std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+  return "done";
+}
+
+// POSITIVE: a workflow task that overruns the deadlock deadline is reported via
+// the deadlock metric (detection only — the task still runs to completion).
+TEST_F(IntegrationTest, DeadlockDetectionReportsOverrunningTask) {
+  const auto tq = UniqueTaskQueue("deadlock");
+  g_deadlock_metric = 0;
+  temporal::WorkerOptions wo;
+  wo.deadlock_detection_timeout = 300ms;
+  wo.metrics_handler = std::make_shared<DeadlockMetrics>();
+  temporal::worker::Worker worker(*client_, tq, wo);
+  worker.RegisterWorkflow("BlockingWorkflow", BlockingWorkflow);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h = client_->StartWorkflow(o, "BlockingWorkflow", 1500);  // 1.5s >> 300ms deadline
+  EXPECT_EQ(h.Result<std::string>(), "done");
+  EXPECT_GT(g_deadlock_metric.load(), 0);  // the watchdog flagged the overrun
+  worker.Stop();
+}
+
 std::atomic<int> g_client_start_intercepts{0};
 
 class RecordingClientOutbound : public temporal::interceptor::ClientOutboundInterceptor {

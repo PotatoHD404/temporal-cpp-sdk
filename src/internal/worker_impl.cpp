@@ -1,5 +1,6 @@
 #include "internal/worker_impl.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -127,6 +128,9 @@ void WorkerImpl::Start() {
       threads_.emplace_back([this] { ActivityPollLoop(/*session=*/true); });
     }
   }
+  if (options_.deadlock_detection_timeout.count() > 0 && workflow_handler_.has_workflows()) {
+    threads_.emplace_back([this] { DeadlockWatchLoop(); });
+  }
   logger_->Info("worker started", {log::F("task_queue", task_queue_)});
 }
 
@@ -225,18 +229,50 @@ void WorkerImpl::WorkflowPollLoop(bool sticky) {
                        static_cast<double>(workflow_gate_.in_flight()), {});
       }
       const auto start = std::chrono::steady_clock::now();
+      const bool watch = options_.deadlock_detection_timeout.count() > 0;
+      if (watch) {
+        deadlock_watch_.Begin();
+      }
       workflow_handler_.Handle(resp);
+      if (watch) {
+        deadlock_watch_.End();
+      }
       if (metrics) {
         metrics->Timer("temporal_workflow_task_execution_latency",
                        std::chrono::steady_clock::now() - start, {});
         metrics->Counter("temporal_workflow_task_handled", 1, {});
       }
     } catch (const std::exception& e) {
+      deadlock_watch_.End();  // clear this thread's entry if Handle threw
       if (stop_.load()) {
         break;
       }
       logger_->Error("workflow poll loop error", {log::F("error", e.what())});
       std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+  }
+}
+
+void WorkerImpl::DeadlockWatchLoop() {
+  auto* metrics = options_.metrics_handler.get();
+  const auto deadline = options_.deadlock_detection_timeout;
+  // Poll a few times per deadline window so an overrun is reported promptly, but
+  // never faster than 50ms (and react quickly to Stop()).
+  const auto interval = std::max(std::chrono::milliseconds(50),
+                                 std::chrono::duration_cast<std::chrono::milliseconds>(deadline) / 4);
+  while (!stop_.load()) {
+    std::this_thread::sleep_for(interval);
+    if (stop_.load()) {
+      break;
+    }
+    const int overruns = deadlock_watch_.ReportOverruns(deadline);
+    if (overruns > 0) {
+      logger_->Error("possible workflow deadlock: a task exceeded its deadline",
+                     {log::F("task_queue", task_queue_),
+                      log::F("timeout_ms", std::to_string(deadline.count()))});
+      if (metrics != nullptr) {
+        metrics->Counter("temporal_workflow_task_deadlock", overruns, {});
+      }
     }
   }
 }

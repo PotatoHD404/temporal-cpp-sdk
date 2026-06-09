@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -139,6 +140,43 @@ class RateLimiter {
   std::chrono::steady_clock::time_point next_slot_;  // epoch by default
 };
 
+// Tracks in-flight workflow-task handling per poller thread so a watchdog can
+// detect (and report) a task that overruns a deadline — a likely deadlock
+// (blocking call / infinite loop in workflow code). It reports only; the coroutine
+// runs on the poller thread and cannot be safely interrupted.
+class DeadlockWatch {
+ public:
+  void Begin() {
+    const std::lock_guard<std::mutex> lock(mu_);
+    active_[std::this_thread::get_id()] = {std::chrono::steady_clock::now(), false};
+  }
+  void End() {
+    const std::lock_guard<std::mutex> lock(mu_);
+    active_.erase(std::this_thread::get_id());
+  }
+  // Count in-flight tasks that have exceeded `deadline` (each reported once).
+  int ReportOverruns(std::chrono::steady_clock::duration deadline) {
+    const auto now = std::chrono::steady_clock::now();
+    const std::lock_guard<std::mutex> lock(mu_);
+    int overruns = 0;
+    for (auto& [id, entry] : active_) {
+      if (!entry.reported && now - entry.start >= deadline) {
+        entry.reported = true;
+        ++overruns;
+      }
+    }
+    return overruns;
+  }
+
+ private:
+  struct Entry {
+    std::chrono::steady_clock::time_point start;
+    bool reported = false;
+  };
+  std::mutex mu_;
+  std::map<std::thread::id, Entry> active_;
+};
+
 // Owns the poller threads and the two task handlers. One worker serves a single
 // task queue.
 class WorkerImpl {
@@ -170,6 +208,7 @@ class WorkerImpl {
   // session activity queue (otherwise the normal queue is polled).
   void WorkflowPollLoop(bool sticky);
   void ActivityPollLoop(bool session);
+  void DeadlockWatchLoop();  // reports workflow tasks that overrun the deadline
 
   std::shared_ptr<GrpcClient> grpc_;
   std::shared_ptr<DataConverter> converter_;
@@ -186,6 +225,7 @@ class WorkerImpl {
   ConcurrencyGate activity_gate_;
   ConcurrencyGate session_gate_;
   RateLimiter activity_rate_limiter_;  // paces activity starts (per second)
+  DeadlockWatch deadlock_watch_;       // detects overrunning workflow tasks
   std::atomic<bool> stop_{false};
   std::atomic<bool> draining_{false};  // set by Stop() before pollers are joined
   std::atomic<bool> started_{false};
