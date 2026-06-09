@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <tuple>
 #include <type_traits>
@@ -38,8 +39,10 @@ class Worker {
   ~Worker();
   Worker(const Worker&) = delete;
   Worker& operator=(const Worker&) = delete;
-  Worker(Worker&&) = delete;
-  Worker& operator=(Worker&&) = delete;
+  // Movable (transfers the underlying impl); a moved-from worker is inert. Defined
+  // out-of-line in worker.cpp where WorkerImpl is complete.
+  Worker(Worker&&) noexcept;
+  Worker& operator=(Worker&&) noexcept;
 
   // Register a workflow: `Ret Fn(workflow::Context&, Args...)`.
   template <class Fn>
@@ -70,7 +73,11 @@ class Worker {
 
   void Start();  // start pollers (non-blocking)
   void Run();    // start pollers and block until SIGINT or Stop()
-  void Stop();   // signal pollers to stop and join
+  // Start pollers and block until the stop token is triggered, then drain — for
+  // `std::jthread t([&](std::stop_token st){ worker.Run(st); });` (cancellable,
+  // no global SIGINT handler).
+  void Run(std::stop_token token);
+  void Stop();  // signal pollers to stop and join
 
   // Replay a recorded workflow history (Temporal's JSON, e.g. from
   // `temporal workflow show -o json` or WorkflowHandle::FetchHistoryJson) against

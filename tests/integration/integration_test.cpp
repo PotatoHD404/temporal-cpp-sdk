@@ -7,6 +7,7 @@
 #include <memory>
 #include <random>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <thread>
 
@@ -2276,6 +2277,37 @@ TEST_F(IntegrationTest, TypedSignalQueryUpdateHandles) {
   h.Signal(kStopSignal, true);               // typed signal; bool checked
   EXPECT_EQ(h.Result<int>(), 12);
   worker.Stop();
+}
+
+// POSITIVE: a Worker is movable — register on one, move it, and the moved-to
+// worker runs workflows (the moved-from is left inert).
+TEST_F(IntegrationTest, WorkerIsMovable) {
+  const auto tq = UniqueTaskQueue("movable");
+  temporal::worker::Worker w1(*client_, tq);
+  w1.RegisterWorkflow("EchoWorkflow", EchoWorkflow);
+  w1.RegisterActivity("Echo", EchoActivity);
+  temporal::worker::Worker w2 = std::move(w1);  // move ctor
+  w2.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h = client_->StartWorkflow(o, "EchoWorkflow", std::string("moved"));
+  EXPECT_EQ(h.Result<std::string>(), "moved");
+  w2.Stop();
+}
+
+// POSITIVE: Worker::Run(std::stop_token) drives the worker on a std::jthread and
+// cancels cleanly when the token is triggered (no global SIGINT handler).
+TEST_F(IntegrationTest, WorkerRunWithStopToken) {
+  const auto tq = UniqueTaskQueue("stoptoken");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("EchoWorkflow", EchoWorkflow);
+  worker.RegisterActivity("Echo", EchoActivity);
+  std::jthread runner([&](std::stop_token st) { worker.Run(st); });
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h = client_->StartWorkflow(o, "EchoWorkflow", std::string("via-run"));
+  EXPECT_EQ(h.Result<std::string>(), "via-run");
+  runner.request_stop();  // Run() returns + drains; the jthread joins on scope exit
 }
 
 }  // namespace
