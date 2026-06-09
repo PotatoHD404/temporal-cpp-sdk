@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <exception>
 #include <string>
 #include <utility>
 
@@ -39,8 +40,36 @@ class TestWorkflowEnvironment {
   // `target` is set from the argument.
   explicit TestWorkflowEnvironment(const std::string& target, ClientOptions options = {})
       : client_(MakeClient(target, std::move(options))) {
-    client_.UnlockTimeSkipping();  // counter 1 -> 0: pending timers fast-forward when idle
+    // Ensure time skipping is on: the server starts locked (counter = 1), so one
+    // unlock enables fast-forward. This is best-effort + idempotent — if the
+    // server is already unlocked (counter 0, e.g. a second environment or a reused
+    // server) the extra unlock is rejected as "unbalanced", which is harmless
+    // since it is already in the state we want, so we ignore it. A genuinely wrong
+    // target (not a test server) surfaces on the first real call instead.
+    try {
+      client_.UnlockTimeSkipping();
+    } catch (const std::exception&) {  // already unlocked — nothing to do
+    }
   }
+
+  // Re-lock on destruction to balance the constructor's unlock, returning the
+  // server to its locked default. This keeps the shared server's lock counter
+  // balanced across environments and stops it from drifting (an idle *unlocked*
+  // server would otherwise keep fast-forwarding between tests). Best-effort — a
+  // dropped connection at teardown must not throw out of a destructor.
+  ~TestWorkflowEnvironment() {
+    try {
+      client_.LockTimeSkipping();
+    } catch (const std::exception&) {
+    }
+  }
+
+  // Non-copyable / non-movable: it owns a balanced unlock/lock pair on a shared
+  // server, so duplicating or relocating it would unbalance the counter.
+  TestWorkflowEnvironment(const TestWorkflowEnvironment&) = delete;
+  TestWorkflowEnvironment& operator=(const TestWorkflowEnvironment&) = delete;
+  TestWorkflowEnvironment(TestWorkflowEnvironment&&) = delete;
+  TestWorkflowEnvironment& operator=(TestWorkflowEnvironment&&) = delete;
 
   // The client bound to the test server — start workflows on it, or build a
   // Worker with `temporal::worker::Worker(env.client(), task_queue)`.
