@@ -2341,4 +2341,17 @@ TEST_F(IntegrationTest, CoAwaitWorkflowRunsAndReplays) {
   EXPECT_NO_THROW(replayer.ReplayWorkflowHistory(history));
 }
 
+// POSITIVE: a schedule can be created with a calendar/cron spec (not just an
+// interval) — the server accepts the cron_string and the schedule exists.
+TEST_F(IntegrationTest, CronScheduleCreateDescribeDelete) {
+  const auto sid = "cron-sched-" + std::to_string(std::random_device{}());
+  temporal::ScheduleOptions opts;
+  opts.cron_expressions = {"0 9 * * MON-FRI"};  // weekdays at 09:00
+  opts.workflow_type = "EchoWorkflow";
+  opts.task_queue = UniqueTaskQueue("cron");
+  client_->CreateSchedule(sid, opts);
+  EXPECT_TRUE(client_->DescribeSchedule(sid));
+  client_->DeleteSchedule(sid);
+}
+
 }  // namespace

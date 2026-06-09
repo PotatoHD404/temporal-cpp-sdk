@@ -203,9 +203,13 @@ struct WorkerOptions {
 // start-workflow action; calendars, overlap policy, and pause are not exposed.)
 struct ScheduleOptions {
   std::chrono::seconds interval{0};  // run the action every `interval`
-  std::string workflow_type;         // required: the workflow to start
-  std::string task_queue;            // required: its task queue
-  std::string workflow_id;           // default: "<schedule id>-workflow"
+  // Calendar/cron specs (standard 5-field cron, optionally with a leading seconds
+  // field and/or a trailing "CRON_TZ=<zone>"). Each string is one schedule trigger;
+  // combine with `interval` or use alone. e.g. "0 9 * * MON-FRI".
+  std::vector<std::string> cron_expressions;
+  std::string workflow_type;  // required: the workflow to start
+  std::string task_queue;     // required: its task queue
+  std::string workflow_id;    // default: "<schedule id>-workflow"
 };
 
 }  // namespace temporal

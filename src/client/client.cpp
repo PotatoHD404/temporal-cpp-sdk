@@ -472,6 +472,9 @@ void Client::CreateSchedule(const std::string& schedule_id, const ScheduleOption
     *schedule->mutable_spec()->add_interval()->mutable_interval() =
         internal::ToProtoDuration(options.interval);
   }
+  for (const auto& cron : options.cron_expressions) {
+    schedule->mutable_spec()->add_cron_string(cron);
+  }
   auto* start = schedule->mutable_action()->mutable_start_workflow();
   start->set_workflow_id(options.workflow_id.empty() ? schedule_id + "-workflow"
                                                      : options.workflow_id);
@@ -513,6 +516,9 @@ void Client::UpdateSchedule(const std::string& schedule_id, const ScheduleOption
   if (options.interval.count() > 0) {
     *schedule->mutable_spec()->add_interval()->mutable_interval() =
         internal::ToProtoDuration(options.interval);
+  }
+  for (const auto& cron : options.cron_expressions) {
+    schedule->mutable_spec()->add_cron_string(cron);
   }
   auto* start = schedule->mutable_action()->mutable_start_workflow();
   start->set_workflow_id(options.workflow_id.empty() ? schedule_id + "-workflow"
