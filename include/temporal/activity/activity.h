@@ -37,11 +37,17 @@ class Context {
   // heartbeat timeout.
   Context(ActivityInfo info, const DataConverter* converter,
           std::function<bool(const Payloads&)> heartbeat = {},
-          std::chrono::steady_clock::duration throttle_interval = {})
+          std::chrono::steady_clock::duration throttle_interval = {},
+          // Clock backing the heartbeat throttle. Defaults to the real steady clock;
+          // tests inject a controllable clock to exercise throttling deterministically
+          // without depending on real-time sleeps (and the scheduler's accuracy).
+          std::function<std::chrono::steady_clock::time_point()> clock =
+              std::chrono::steady_clock::now)
       : info_(std::move(info)),
         converter_(converter),
         heartbeat_(std::move(heartbeat)),
-        throttle_interval_(throttle_interval) {}
+        throttle_interval_(throttle_interval),
+        clock_(std::move(clock)) {}
 
   const ActivityInfo& GetInfo() const { return info_; }
 
@@ -60,7 +66,7 @@ class Context {
     if (!heartbeat_) {
       return;
     }
-    const auto now = std::chrono::steady_clock::now();
+    const auto now = clock_();
     if (reported_ && now - last_report_ < throttle_interval_) {
       return;  // too soon; keep the cached cancel state
     }
@@ -98,6 +104,7 @@ class Context {
   const DataConverter* converter_;
   std::function<bool(const Payloads&)> heartbeat_;
   std::chrono::steady_clock::duration throttle_interval_{};  // 0 => report every call
+  std::function<std::chrono::steady_clock::time_point()> clock_;  // throttle clock (injectable)
   std::chrono::steady_clock::time_point last_report_{};      // valid only once reported_
   bool reported_ = false;  // whether any actual report has happened (first call always reports)
   bool cancel_requested_ = false;

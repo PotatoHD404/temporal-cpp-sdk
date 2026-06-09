@@ -141,6 +141,22 @@ struct LocalActivityMarkerRaw {
   Payload failure_message;
 };
 
+// One step of the replay timeline that follows the first accepted update. On a
+// from-scratch replay the prescan resolves every history-known future up front,
+// so a single resume would race the workflow body to completion before any
+// historical update re-runs. To preserve the live interleaving, every event that
+// *follows* the first update (a future resolution or a delivered signal) is held
+// back here instead of being pre-applied, then replayed in history order with the
+// updates spliced in at their original positions (see ReapplyHistoricalUpdates).
+// Markers / side-effects / command records are NOT deferred — they are consumed
+// in call order, independent of event timing.
+struct ReplayStep {
+  bool is_update = false;
+  hist::HistoryEvent event;  // when !is_update: a deferred future-resolution / signal
+  std::string update_name;   // when is_update: the accepted update's handler + args
+  Payloads update_args;
+};
+
 struct Prescan {
   Payloads input;
   std::map<std::string, Payload> headers;  // from WorkflowExecutionStarted.header
@@ -171,15 +187,58 @@ struct Prescan {
   std::vector<std::pair<Payloads, Payloads>> version_markers;
   std::vector<MutableSideEffectMarkerRaw> mutable_side_effect_markers;  // in history order
   std::vector<LocalActivityMarkerRaw> local_activities;                // in call order
+  // Events after the first accepted update, plus the updates themselves, in
+  // history order — replayed incrementally so updates re-run at the right point.
+  // Empty for the common update-free workflow (then replay is the single-resume
+  // fast-forward, unchanged).
+  std::vector<ReplayStep> post_update_timeline;
 };
+
+// True for events that merely *resolve a future or deliver a signal* (no command
+// record, no emit-guard state). On replay these are the only events whose timing
+// relative to an accepted update matters, so once the first update is seen they
+// are deferred and replayed incrementally (see Prescan::post_update_timeline).
+// Scheduling/marker/command-bearing events are never deferred — they are applied
+// in the prescan so the emit-guard and command-match list stay complete.
+bool IsDeferredOnReplay(enums::EventType type) {
+  switch (type) {
+    case enums::EVENT_TYPE_ACTIVITY_TASK_COMPLETED:
+    case enums::EVENT_TYPE_ACTIVITY_TASK_FAILED:
+    case enums::EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT:
+    case enums::EVENT_TYPE_ACTIVITY_TASK_CANCELED:
+    case enums::EVENT_TYPE_TIMER_FIRED:
+    case enums::EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED:
+    case enums::EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_FAILED:
+    case enums::EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_CANCELED:
+    case enums::EVENT_TYPE_NEXUS_OPERATION_COMPLETED:
+    case enums::EVENT_TYPE_NEXUS_OPERATION_FAILED:
+    case enums::EVENT_TYPE_NEXUS_OPERATION_TIMED_OUT:
+    case enums::EVENT_TYPE_NEXUS_OPERATION_CANCELED:
+    case enums::EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED:
+    case enums::EVENT_TYPE_WORKFLOW_EXECUTION_CANCEL_REQUESTED:
+      return true;
+    default:
+      return false;
+  }
+}
 
 // Walk the event history once, indexing the inputs/outcomes the runner replays
 // against. Activities are correlated to their completion/failure via the
 // scheduled event id that those events carry.
 Prescan ScanHistory(const hist::History& history) {
   Prescan ps;
+  bool seen_update = false;  // set once the first update is accepted in history
   for (const auto& ev : history.events()) {
     ps.last_event_id = ev.event_id();
+    // After the first accepted update, hold back future-resolutions and signals so
+    // they replay in history order *after* the update re-runs (see Run()). Markers
+    // and command/schedule events still fall through to the prescan below.
+    if (seen_update && IsDeferredOnReplay(ev.event_type())) {
+      ReplayStep step;
+      step.event = ev;
+      ps.post_update_timeline.push_back(std::move(step));
+      continue;
+    }
     switch (ev.event_type()) {
       case enums::EVENT_TYPE_WORKFLOW_EXECUTION_STARTED: {
         const auto& a = ev.workflow_execution_started_event_attributes();
@@ -380,6 +439,22 @@ Prescan ScanHistory(const hist::History& history) {
         ps.signals[a.signal_name()].push_back(FromProtoPayloads(a.input()));
         break;
       }
+      case enums::EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_ACCEPTED: {
+        // An update accepted in a prior task: splice it into the replay timeline so
+        // the runner re-runs the handler at the matching point, reconstructing any
+        // state it mutated (e.g. a flag the body awaits on). From here on, later
+        // resolutions/signals are deferred so they land *after* this update.
+        const auto& in = ev.workflow_execution_update_accepted_event_attributes()
+                             .accepted_request()
+                             .input();
+        ReplayStep step;
+        step.is_update = true;
+        step.update_name = in.name();
+        step.update_args = FromProtoPayloads(in.args());
+        ps.post_update_timeline.push_back(std::move(step));
+        seen_update = true;
+        break;
+      }
       case enums::EVENT_TYPE_WORKFLOW_EXECUTION_CANCEL_REQUESTED:
         ps.cancel_requested = true;
         break;
@@ -517,6 +592,45 @@ class WorkflowRunner final : public WorkflowOutbound {
       coroutine_ = std::make_unique<Coroutine>([this] { RunBody(); });
     }
     ResumeCoroutine();
+    ReapplyHistoricalUpdates();
+  }
+
+  // Replay-only: re-deliver the events and updates that follow the first accepted
+  // update, so update handlers re-run at their original interleaving and any state
+  // they mutated (e.g. a flag the body `Await`s on, or a counter a later signal
+  // completes) is rebuilt.
+  //
+  // The first resume above fast-forwards the body through every pre-update history
+  // event and parks. From there the deferred timeline is replayed in history
+  // order: an update re-runs its handler; a deferred event resolves a future or
+  // delivers a signal (exactly as the live/sticky path applies incremental
+  // events). A resume after each step lets the body advance to the next park.
+  // Because emitted commands are guarded to fire once, re-running a handler or
+  // re-resolving a future never re-schedules — it only advances the body (and the
+  // produced_commands_ order the determinism check compares). The timeline is
+  // empty for the common update-free workflow, so this is a no-op there and the
+  // single-resume fast-forward above is the whole replay.
+  void ReapplyHistoricalUpdates() {
+    for (const auto& step : scan_.post_update_timeline) {
+      if (!coroutine_ || coroutine_->Done() || deadlocked_) {
+        break;
+      }
+      if (step.is_update) {
+        const auto it = update_handlers_.find(step.update_name);
+        if (it != update_handlers_.end()) {
+          try {
+            it->second(step.update_args);
+          } catch (const std::exception&) {
+            // The original outcome is already in history; a handler that throws on
+            // replay must not abort the whole replay.
+          }
+        }
+        // An unregistered handler is skipped rather than aborting the replay.
+      } else {
+        ApplyEventToState(step.event);  // resolve a future / deliver a signal
+      }
+      ResumeCoroutine();
+    }
   }
 
   // Sticky continuation: apply only the new history events to the live futures
@@ -1107,6 +1221,16 @@ class WorkflowRunner final : public WorkflowOutbound {
       if (ev.event_id() <= scan_.last_event_id) {
         continue;
       }
+      ApplyEventToState(ev);
+      scan_.last_event_id = ev.event_id();
+    }
+  }
+
+  // Apply one history event to live futures / signal state — the body of
+  // ApplyEvents, factored out so the replay timeline can re-deliver a deferred
+  // event directly (there the last_event_id skip guard must not apply, since the
+  // prescan already advanced last_event_id past the whole history).
+  void ApplyEventToState(const hist::HistoryEvent& ev) {
       switch (ev.event_type()) {
         case enums::EVENT_TYPE_ACTIVITY_TASK_SCHEDULED: {
           const auto& a = ev.activity_task_scheduled_event_attributes();
@@ -1236,8 +1360,6 @@ class WorkflowRunner final : public WorkflowOutbound {
         default:
           break;
       }
-      scan_.last_event_id = ev.event_id();
-    }
   }
 
   void EmitScheduleActivity(const std::string& id, std::string_view activity_type,

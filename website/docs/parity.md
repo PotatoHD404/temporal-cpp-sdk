@@ -101,7 +101,7 @@ cache. This page is the honest accounting.
 | Stackful-coroutine dispatcher | ✅ | |
 | Sticky cache + incremental history | ✅ | |
 | Non-determinism detection | ✅ | replayed commands matched to history in order; `WorkflowPanicPolicy` (block/fail) |
-| Replay re-application of updates | ❌ | matters only after a cache eviction |
+| Replay re-application of updates | ✅ | on a from-scratch replay (after a cache eviction) accepted updates are re-run at their recorded interleaving: events that follow the first update are deferred and replayed in history order with the update handlers spliced back in, so state an update mutated — a flag the body awaits, a counter a later signal completes — is reconstructed. e2e-tested |
 | History pagination | ✅ | workflow-task / query / export paths assemble paged histories via `next_page_token` |
 | Deadlock detection / panic policies | ✅ | panic policies ✅ (`WorkflowPanicPolicy`); a workflow task overrunning `deadlock_detection_timeout` is detected, reported (metric/log), AND aborted — the task is failed (server reschedules) and the worker keeps serving other work; the runaway coroutine runs on its own thread, abandoned + intentionally leaked on abort (as Go leaks a stuck workflow goroutine). e2e-tested |
 
@@ -133,19 +133,23 @@ Most of the original roadmap is now ✅ (see the matrix above):
 4. **Breadth** — ✅ replay/test framework + schedules (full client lifecycle) + worker versioning
    (build-id + rules + deployments) + sessions (host pinning) + most of the operator surface.
 
-**What genuinely remains** (the honest gaps from the matrix):
+**Recently closed** (all ✅ in the matrix above now):
 
-- ❌ **Replay re-application of updates** — re-delivering historical update-accepted events to handlers
-  at the right replay interleaving (only matters after a cache eviction); needs task-boundary-aware
-  replay.
-- 🟡 **Nexus operations** — endpoint management works; Nexus operation calls + a worker Nexus handler
-  (the deterministic caller command + handler) are not implemented.
-- 🟡 **Test-framework time-skip** — the replayer works; an auto-time-skipping test environment needs a
-  time-skipping server.
-- 🟡 **Deadlock abort** — overruns are detected + reported; aborting the runaway coroutine needs
-  off-poller-thread execution.
-- ❌ small specifics: heartbeat throttling, calendar/cron schedule specs, parent-close-policy /
+- ✅ **Replay re-application of updates** — accepted updates re-run at their recorded interleaving on a
+  from-scratch replay (deferred-event timeline; see the Determinism row).
+- ✅ **Nexus operations** — caller command (`ExecuteNexusOperation`) + a worker Nexus handler
+  (`RegisterNexusOperation`), on top of endpoint management.
+- ✅ **Deadlock abort** — an overrunning task is detected on its resume, reported (metric/log), and
+  aborted; the runaway coroutine runs on its own thread and is abandoned + leaked so the worker keeps
+  serving (as the Go SDK leaks a stuck workflow goroutine).
+- ✅ small specifics: heartbeat throttling, calendar/cron schedule specs, parent-close-policy +
   signal-to-child, client-side typed failure decode.
 
-If a capability you need is in the ❌ column, it genuinely isn't there yet — please don't assume
+**What genuinely remains** (the honest gap from the matrix):
+
+- 🟡 **Test-framework time-skip** — the replayer works (`Worker::ReplayWorkflowHistory`); an
+  auto-time-skipping test environment (timers fire instantly without wall-clock waits) needs a
+  time-skipping server, which this SDK does not embed.
+
+If a capability you need is marked 🟡/❌, it genuinely isn't fully there yet — please don't assume
 otherwise from the working core.

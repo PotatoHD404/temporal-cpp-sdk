@@ -2285,6 +2285,43 @@ TEST_F(IntegrationTest, TypedSignalQueryUpdateHandles) {
   worker.Stop();
 }
 
+// POSITIVE: replay re-application of updates. A workflow accumulates state via
+// updates, then a signal completes it returning that state. After the updates are
+// accepted, the original worker is stopped (discarding its sticky cache), so a
+// fresh worker must replay the whole history from scratch — re-running both update
+// handlers at their recorded interleaving — to reconstruct the sum. If historical
+// updates were dropped on replay (the pre-fix behavior), the body would complete
+// with 0 instead of 12.
+TEST_F(IntegrationTest, UpdateStateReappliedOnFullReplay) {
+  const auto tq = UniqueTaskQueue("update-replay");
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h = client_->StartWorkflow(o, "TypedSquWorkflow");
+
+  // Worker A accepts the two updates (sum -> 12) and parks the workflow on the
+  // stop signal, resident in A's sticky cache. Stopping A discards that cache.
+  {
+    temporal::worker::Worker worker_a(*client_, tq);
+    worker_a.RegisterWorkflow("TypedSquWorkflow", TypedSquWorkflow);
+    worker_a.Start();
+    EXPECT_EQ(h.Update(kBumpUpdate, 5), 5);   // accepted + completed in history
+    EXPECT_EQ(h.Update(kBumpUpdate, 7), 12);
+    std::this_thread::sleep_for(2s);          // workflow parks on the stop signal
+    worker_a.Stop();
+  }
+
+  // Worker B has a cold cache. Once the stop-signal task reschedules onto the
+  // normal queue (A's sticky queue times out), B replays the full history from
+  // scratch: the two bump updates must be re-applied so sum is rebuilt to 12.
+  temporal::worker::Worker worker_b(*client_, tq);
+  worker_b.RegisterWorkflow("TypedSquWorkflow", TypedSquWorkflow);
+  worker_b.Start();
+  h.Signal(kStopSignal, true);
+  EXPECT_EQ(h.Result<int>(), 12);   // updates reconstructed on replay (0 if dropped)
+  EXPECT_GE(worker_b.replays(), 1);  // prove B replayed from scratch
+  worker_b.Stop();
+}
+
 // POSITIVE: a Worker is movable — register on one, move it, and the moved-to
 // worker runs workflows (the moved-from is left inert).
 TEST_F(IntegrationTest, WorkerIsMovable) {

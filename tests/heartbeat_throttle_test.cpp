@@ -1,6 +1,5 @@
 #include <atomic>
 #include <chrono>
-#include <thread>
 
 #include <gtest/gtest.h>
 
@@ -14,36 +13,37 @@ namespace activity = temporal::activity;
 using namespace std::chrono_literals;
 
 // A tight RecordHeartbeat loop must not flood the server: the underlying report
-// fires at most once per throttle interval. We drive ~20 calls across a handful
-// of 50ms windows and assert the mock was invoked far fewer times than it was
-// called, that the first call reports, and that a call after the interval reports.
+// fires at most once per throttle interval. An injected clock drives the throttle,
+// so the report count is exact and independent of real-time scheduling (the old
+// sleep-based version flaked on contended CI runners where sleeps overran).
 TEST(HeartbeatThrottle, ThrottlesActualReports) {
   const auto dc = temporal::DataConverter::Default();
   std::atomic<int> reports{0};
+  std::chrono::steady_clock::time_point now{};  // fake clock the test advances by hand
   activity::Context ctx({}, dc.get(),
                         [&](const temporal::Payloads&) {
                           ++reports;
                           return false;
                         },
-                        50ms);
+                        50ms, [&] { return now; });
 
   // First call always reports (no prior timestamp).
   ctx.RecordHeartbeat(1);
   EXPECT_EQ(reports.load(), 1);
 
-  // 20 rapid calls with 5ms sleeps span ~100ms => ~2 more intervals elapse, so
-  // only a small handful of additional reports get through.
+  // 20 rapid calls, advancing the clock 5ms each (calls land at t=0..95ms). At a
+  // 50ms interval only the call crossing the 50ms boundary reports; the rest skip.
   constexpr int kCalls = 20;
   for (int i = 0; i < kCalls; ++i) {
     ctx.RecordHeartbeat(i);
-    std::this_thread::sleep_for(5ms);
+    now += 5ms;
   }
   EXPECT_LT(reports.load(), kCalls);  // throttled: far fewer reports than calls
-  EXPECT_LE(reports.load(), 6);       // ~120ms of windows at 50ms => only a few
+  EXPECT_EQ(reports.load(), 2);       // exactly: the initial report + the one at t=50ms
 
   // After clearly more than one interval, the next call must report again.
   const int before = reports.load();
-  std::this_thread::sleep_for(70ms);
+  now += 70ms;
   ctx.RecordHeartbeat(99);
   EXPECT_EQ(reports.load(), before + 1);
 }
