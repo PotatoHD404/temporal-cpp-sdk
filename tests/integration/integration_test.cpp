@@ -2480,4 +2480,42 @@ TEST_F(IntegrationTest, DeadlockAbortKeepsWorkerAlive) {
   worker.Stop();
 }
 
+// Sleeps for a long wall-clock duration; against the time-skipping test server the
+// timer is fast-forwarded so it returns immediately.
+std::string DaySleepWorkflow(temporal::workflow::Context& ctx) {
+  ctx.Sleep(std::chrono::hours(24));
+  return "woke";
+}
+
+// POSITIVE (time-skipping test server): a workflow that sleeps 24h completes in
+// well under wall-clock time because the server fast-forwards the pending timer,
+// and the server clock advances ~24h. Gated on TEMPORAL_TEST_SERVER (host:port of
+// a running `temporal-test-server`); skipped when unset so the normal dev-server
+// suite is unaffected.
+TEST_F(IntegrationTest, TimeSkippingFastForwardsTimers) {
+  const char* target = std::getenv("TEMPORAL_TEST_SERVER");
+  if (target == nullptr || *target == '\0') {
+    GTEST_SKIP() << "set TEMPORAL_TEST_SERVER=host:port (temporal-test-server) to run";
+  }
+  temporal::testing::TestWorkflowEnvironment env(target);  // connects + unlocks time skipping
+  const auto tq = UniqueTaskQueue("timeskip");
+  temporal::worker::Worker worker(env.client(), tq);
+  worker.RegisterWorkflow("DaySleepWorkflow", DaySleepWorkflow);
+  worker.Start();
+
+  const auto server_before = env.CurrentTime();
+  const auto wall_start = std::chrono::steady_clock::now();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h = env.client().StartWorkflow(o, "DaySleepWorkflow");
+  EXPECT_EQ(h.Result<std::string>(), "woke");
+  const auto wall_elapsed = std::chrono::steady_clock::now() - wall_start;
+  const auto server_skipped = env.CurrentTime() - server_before;
+
+  // The 24h timer was skipped: real elapsed time is tiny, the server clock jumped ~24h.
+  EXPECT_LT(wall_elapsed, std::chrono::seconds(60));     // nowhere near 24h of waiting
+  EXPECT_GE(server_skipped, std::chrono::hours(23));     // server fast-forwarded ~24h
+  worker.Stop();
+}
+
 }  // namespace

@@ -42,6 +42,9 @@ GrpcClient::GrpcClient(const std::string& target, std::string ns, std::string id
   stub_ = wsv::WorkflowService::NewStub(channel);
   // OperatorService lives on the same frontend channel as WorkflowService.
   operator_stub_ = osv::OperatorService::NewStub(channel);
+  // TestService is served only by the time-skipping test server; the stub is
+  // harmless against other servers (its RPCs return UNIMPLEMENTED there).
+  test_stub_ = tsv::TestService::NewStub(channel);
 }
 
 template <class Resp, class Invoke>
@@ -144,5 +147,39 @@ TEMPORAL_OP_CALL(DeleteNamespace)
 
 #undef TEMPORAL_WS_CALL
 #undef TEMPORAL_OP_CALL
+
+// TestService (time-skipping test server). The request/response type names don't
+// follow the uniform Method##Request/Response shape (Sleep returns SleepResponse;
+// GetCurrentTime takes Empty), so each is written out rather than macro-expanded.
+tsv::LockTimeSkippingResponse GrpcClient::LockTimeSkipping(const tsv::LockTimeSkippingRequest& req) {
+  return UnaryCall<tsv::LockTimeSkippingResponse>(
+      "LockTimeSkipping", false,
+      [&](grpc::ClientContext* c, tsv::LockTimeSkippingResponse* p) {
+        return test_stub_->LockTimeSkipping(c, req, p);
+      });
+}
+
+tsv::UnlockTimeSkippingResponse GrpcClient::UnlockTimeSkipping(
+    const tsv::UnlockTimeSkippingRequest& req) {
+  return UnaryCall<tsv::UnlockTimeSkippingResponse>(
+      "UnlockTimeSkipping", false,
+      [&](grpc::ClientContext* c, tsv::UnlockTimeSkippingResponse* p) {
+        return test_stub_->UnlockTimeSkipping(c, req, p);
+      });
+}
+
+tsv::SleepResponse GrpcClient::TestServerSleep(const tsv::SleepRequest& req) {
+  return UnaryCall<tsv::SleepResponse>(
+      "Sleep", false,
+      [&](grpc::ClientContext* c, tsv::SleepResponse* p) { return test_stub_->Sleep(c, req, p); });
+}
+
+tsv::GetCurrentTimeResponse GrpcClient::GetCurrentTime(const google::protobuf::Empty& req) {
+  return UnaryCall<tsv::GetCurrentTimeResponse>(
+      "GetCurrentTime", false,
+      [&](grpc::ClientContext* c, tsv::GetCurrentTimeResponse* p) {
+        return test_stub_->GetCurrentTime(c, req, p);
+      });
+}
 
 }  // namespace temporal::internal

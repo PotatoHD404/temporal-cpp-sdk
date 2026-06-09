@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -349,6 +350,25 @@ class Client {
   }
   void FailActivity(const std::string& task_token, const std::string& message,
                     const std::string& type = "ApplicationError");
+
+  // ---- Time-skipping test server (TestService) ------------------------------
+  // These RPCs are served ONLY by the Temporal time-skipping test server
+  // (`temporal-test-server`), not the dev server or production. The test server
+  // starts with time skipping LOCKED (counter = 1); UnlockTimeSkipping lets it
+  // fast-forward through pending timers, so a workflow that sleeps for "days"
+  // completes in milliseconds. See testing::TestWorkflowEnvironment for the usual
+  // wrapper that connects + unlocks for you. Calling these against a non-test
+  // server throws RpcError (UNIMPLEMENTED).
+  //
+  // The current (possibly skipped-ahead) server clock.
+  std::chrono::system_clock::time_point GetCurrentTime();
+  // Block until the server clock advances by `duration` (fast-forwarded when time
+  // skipping is unlocked).
+  void Sleep(std::chrono::system_clock::duration duration);
+  // Increment / decrement the time-skipping lock counter. Time skips only while
+  // the counter is 0; an unbalanced UnlockTimeSkipping is a server-side error.
+  void LockTimeSkipping();
+  void UnlockTimeSkipping();
 
   // Accessors used by Worker.
   const std::shared_ptr<internal::GrpcClient>& grpc() const { return grpc_; }

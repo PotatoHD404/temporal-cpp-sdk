@@ -114,7 +114,7 @@ cache. This page is the honest accounting.
 | Metrics | ✅ | `MetricsHandler` (counter/gauge/timer): poller lifecycle (start, in-flight), schedule-to-start + end-to-end latency timers, task success/failure counters, slots-available gauge, sticky-cache hit/miss; e2e-verified; a few engine-internal Go counters still not emitted |
 | Tracing / OpenTelemetry | ✅ | `TracingInterceptor` creates spans around workflow + activity and propagates one trace workflow→activity via headers (e2e-verified); `Tracer`/`Span` is a bring-your-own adapter — no OTel exporter bundled |
 | Structured logging | ✅ | pluggable `log::Logger` |
-| Test framework (time-skip, replayer) | 🟡 | replayer ✅ (`Worker::ReplayWorkflowHistory`); time-skip ❌ |
+| Test framework (time-skip, replayer) | ✅ | replayer ✅ (`Worker::ReplayWorkflowHistory`); time-skip ✅ via `testing::TestWorkflowEnvironment` against the Temporal time-skipping test server (`temporal-test-server`) — a workflow that sleeps 24h completes in milliseconds and the server clock advances ~24h; e2e-verified (gated on the test-server binary, which is separate from the dev server, exactly like the other integration tests need a running server) |
 | Schedules | ✅ | full client lifecycle (create/describe/delete/update/list/trigger/pause); calendar/cron specs ❌ |
 | Nexus operations | 🟡 | endpoint management (create/get/list via OperatorService) ✅ e2e; Nexus operation calls + worker Nexus handler ❌ |
 
@@ -133,7 +133,7 @@ Most of the original roadmap is now ✅ (see the matrix above):
 4. **Breadth** — ✅ replay/test framework + schedules (full client lifecycle) + worker versioning
    (build-id + rules + deployments) + sessions (host pinning) + most of the operator surface.
 
-**Recently closed** (all ✅ in the matrix above now):
+**Recently closed** — every itemized gap from earlier revisions of this page is now ✅:
 
 - ✅ **Replay re-application of updates** — accepted updates re-run at their recorded interleaving on a
   from-scratch replay (deferred-event timeline; see the Determinism row).
@@ -142,14 +142,21 @@ Most of the original roadmap is now ✅ (see the matrix above):
 - ✅ **Deadlock abort** — an overrunning task is detected on its resume, reported (metric/log), and
   aborted; the runaway coroutine runs on its own thread and is abandoned + leaked so the worker keeps
   serving (as the Go SDK leaks a stuck workflow goroutine).
+- ✅ **Test-framework time-skip** — `testing::TestWorkflowEnvironment` drives the Temporal
+  time-skipping test server's TestService (lock/unlock/sleep/get-current-time), so timer-heavy
+  workflows test in milliseconds.
 - ✅ small specifics: heartbeat throttling, calendar/cron schedule specs, parent-close-policy +
   signal-to-child, client-side typed failure decode.
 
-**What genuinely remains** (the honest gap from the matrix):
+**What still limits parity** (depth, not the itemized roadmap):
 
-- 🟡 **Test-framework time-skip** — the replayer works (`Worker::ReplayWorkflowHistory`); an
-  auto-time-skipping test environment (timers fire instantly without wall-clock waits) needs a
-  time-skipping server, which this SDK does not embed.
+The itemized roadmap is complete, but this is still not the full official surface. The honest
+caveats live in the matrix above, e.g.: TLS/mTLS is unit-verified but not yet run against a real
+TLS Temporal server; parts of the operator/versioning surface (remote-cluster federation, worker
+deployment versioning) are implemented but need infra a single dev server can't provide;
+heartbeat-held long-lived sessions, a bundled OTel exporter, and a few engine-internal Go metrics
+are not implemented. And the broad surface the intro names (the full schedules/Nexus/visibility/
+security/cloud breadth) remains years of work behind the official SDKs.
 
-If a capability you need is marked 🟡/❌, it genuinely isn't fully there yet — please don't assume
-otherwise from the working core.
+If a capability shows a caveat or 🟡/❌ in the matrix, it genuinely isn't fully there yet — please
+don't assume otherwise from the working core.

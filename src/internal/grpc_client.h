@@ -7,6 +7,8 @@
 
 #include "temporal/api/operatorservice/v1/request_response.pb.h"
 #include "temporal/api/operatorservice/v1/service.grpc.pb.h"
+#include "temporal/api/testservice/v1/request_response.pb.h"
+#include "temporal/api/testservice/v1/service.grpc.pb.h"
 #include "temporal/api/workflowservice/v1/request_response.pb.h"
 #include "temporal/api/workflowservice/v1/service.grpc.pb.h"
 
@@ -14,6 +16,7 @@ namespace temporal::internal {
 
 namespace wsv = ::temporal::api::workflowservice::v1;
 namespace osv = ::temporal::api::operatorservice::v1;
+namespace tsv = ::temporal::api::testservice::v1;
 
 // Thin wrapper over the generated WorkflowService stub. Each method issues one
 // unary RPC. Long-poll methods (PollWorkflowTaskQueue, PollActivityTaskQueue,
@@ -119,6 +122,12 @@ class GrpcClient {
       const osv::RemoveRemoteClusterRequest& req);
   osv::DeleteNamespaceResponse DeleteNamespace(const osv::DeleteNamespaceRequest& req);
 
+  // TestService RPCs (time-skipping test server only; same channel).
+  tsv::LockTimeSkippingResponse LockTimeSkipping(const tsv::LockTimeSkippingRequest& req);
+  tsv::UnlockTimeSkippingResponse UnlockTimeSkipping(const tsv::UnlockTimeSkippingRequest& req);
+  tsv::SleepResponse TestServerSleep(const tsv::SleepRequest& req);
+  tsv::GetCurrentTimeResponse GetCurrentTime(const google::protobuf::Empty& req);
+
  private:
   // Issues one unary RPC, attaching auth metadata (Authorization + namespace) when
   // an API key is configured. Defined in the .cpp (only instantiated there).
@@ -127,6 +136,7 @@ class GrpcClient {
 
   std::unique_ptr<wsv::WorkflowService::Stub> stub_;
   std::unique_ptr<osv::OperatorService::Stub> operator_stub_;
+  std::unique_ptr<tsv::TestService::Stub> test_stub_;  // time-skipping test server only
   std::string ns_;
   std::string identity_;
   std::string api_key_;

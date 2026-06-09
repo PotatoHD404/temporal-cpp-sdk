@@ -9,6 +9,7 @@
 #include <temporal/common/search_attribute.h>
 #include <temporal/converter/data_converter.h>
 #include <temporal/log/logger.h>
+#include <temporal/testing/test_workflow_environment.h>
 #include <temporal/worker/worker.h>
 #include <temporal/workflow/channel.h>
 #include <temporal/workflow/context.h>

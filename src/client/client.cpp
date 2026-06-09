@@ -933,4 +933,26 @@ void Client::FailActivity(const std::string& task_token, const std::string& mess
   grpc_->RespondActivityTaskFailed(req);
 }
 
+std::chrono::system_clock::time_point Client::GetCurrentTime() {
+  const auto resp = grpc_->GetCurrentTime(google::protobuf::Empty{});
+  const auto& ts = resp.time();
+  const auto since_epoch =
+      std::chrono::seconds(ts.seconds()) + std::chrono::nanoseconds(ts.nanos());
+  return std::chrono::system_clock::time_point(
+      std::chrono::duration_cast<std::chrono::system_clock::duration>(since_epoch));
+}
+
+void Client::Sleep(std::chrono::system_clock::duration duration) {
+  internal::tsv::SleepRequest req;
+  *req.mutable_duration() =
+      internal::ToProtoDuration(std::chrono::duration_cast<std::chrono::nanoseconds>(duration));
+  grpc_->TestServerSleep(req);
+}
+
+void Client::LockTimeSkipping() { grpc_->LockTimeSkipping(internal::tsv::LockTimeSkippingRequest{}); }
+
+void Client::UnlockTimeSkipping() {
+  grpc_->UnlockTimeSkipping(internal::tsv::UnlockTimeSkippingRequest{});
+}
+
 }  // namespace temporal::client
