@@ -33,6 +33,22 @@ namespace wf = ::temporal::api::workflow::v1;
 
 namespace {
 
+// Pages through a list RPC. `fetch(token)` builds the request (applying the page
+// token) and issues the call; `collect(resp)` appends that page's items. Loops
+// until the server stops returning a next_page_token.
+template <class Fetch, class Collect>
+void Paginate(Fetch fetch, Collect collect) {
+  std::string page_token;
+  for (;;) {
+    const auto resp = fetch(page_token);
+    collect(resp);
+    page_token = resp.next_page_token();
+    if (page_token.empty()) {
+      break;
+    }
+  }
+}
+
 // Strips the verbose "WORKFLOW_EXECUTION_STATUS_" prefix off the proto enum name,
 // e.g. WORKFLOW_EXECUTION_STATUS_RUNNING -> "Running".
 std::string StatusName(enums::WorkflowExecutionStatus status) {
@@ -293,25 +309,23 @@ WorkflowHandle Client::GetHandle(std::string workflow_id, std::string run_id) {
 
 std::vector<WorkflowDescription> Client::ListWorkflows(const std::string& query) {
   std::vector<WorkflowDescription> out;
-  std::string page_token;
-  for (;;) {
-    internal::wsv::ListWorkflowExecutionsRequest req;
-    req.set_namespace_(ns_);
-    if (!query.empty()) {
-      req.set_query(query);
-    }
-    if (!page_token.empty()) {
-      req.set_next_page_token(page_token);
-    }
-    const auto resp = grpc_->ListWorkflowExecutions(req);
-    for (const auto& info : resp.executions()) {
-      out.push_back(DescriptionFromInfo(info));
-    }
-    page_token = resp.next_page_token();
-    if (page_token.empty()) {
-      break;
-    }
-  }
+  Paginate(
+      [&](const std::string& token) {
+        internal::wsv::ListWorkflowExecutionsRequest req;
+        req.set_namespace_(ns_);
+        if (!query.empty()) {
+          req.set_query(query);
+        }
+        if (!token.empty()) {
+          req.set_next_page_token(token);
+        }
+        return grpc_->ListWorkflowExecutions(req);
+      },
+      [&](const auto& resp) {
+        for (const auto& info : resp.executions()) {
+          out.push_back(DescriptionFromInfo(info));
+        }
+      });
   return out;
 }
 
@@ -520,22 +534,20 @@ void Client::UnpauseSchedule(const std::string& schedule_id, const std::string& 
 
 std::vector<std::string> Client::ListSchedules() {
   std::vector<std::string> out;
-  std::string page_token;
-  for (;;) {
-    internal::wsv::ListSchedulesRequest req;
-    req.set_namespace_(ns_);
-    if (!page_token.empty()) {
-      req.set_next_page_token(page_token);
-    }
-    const auto resp = grpc_->ListSchedules(req);
-    for (const auto& entry : resp.schedules()) {
-      out.push_back(entry.schedule_id());
-    }
-    page_token = resp.next_page_token();
-    if (page_token.empty()) {
-      break;
-    }
-  }
+  Paginate(
+      [&](const std::string& token) {
+        internal::wsv::ListSchedulesRequest req;
+        req.set_namespace_(ns_);
+        if (!token.empty()) {
+          req.set_next_page_token(token);
+        }
+        return grpc_->ListSchedules(req);
+      },
+      [&](const auto& resp) {
+        for (const auto& entry : resp.schedules()) {
+          out.push_back(entry.schedule_id());
+        }
+      });
   return out;
 }
 
@@ -674,22 +686,20 @@ BatchOperationDescription Client::DescribeBatchOperation(const std::string& job_
 
 std::vector<std::string> Client::ListBatchOperations() {
   std::vector<std::string> out;
-  std::string page_token;
-  for (;;) {
-    internal::wsv::ListBatchOperationsRequest req;
-    req.set_namespace_(ns_);
-    if (!page_token.empty()) {
-      req.set_next_page_token(page_token);
-    }
-    const auto resp = grpc_->ListBatchOperations(req);
-    for (const auto& info : resp.operation_info()) {
-      out.push_back(info.job_id());
-    }
-    page_token = resp.next_page_token();
-    if (page_token.empty()) {
-      break;
-    }
-  }
+  Paginate(
+      [&](const std::string& token) {
+        internal::wsv::ListBatchOperationsRequest req;
+        req.set_namespace_(ns_);
+        if (!token.empty()) {
+          req.set_next_page_token(token);
+        }
+        return grpc_->ListBatchOperations(req);
+      },
+      [&](const auto& resp) {
+        for (const auto& info : resp.operation_info()) {
+          out.push_back(info.job_id());
+        }
+      });
   return out;
 }
 
@@ -742,22 +752,20 @@ ClusterDescription Client::DescribeCluster() {
 
 std::vector<std::string> Client::ListClusters() {
   std::vector<std::string> out;
-  std::string page_token;
-  for (;;) {
-    // Cluster-scoped: ListClusters carries no namespace.
-    internal::osv::ListClustersRequest req;
-    if (!page_token.empty()) {
-      req.set_next_page_token(page_token);
-    }
-    const auto resp = grpc_->ListClusters(req);
-    for (const auto& cluster : resp.clusters()) {
-      out.push_back(cluster.cluster_name());
-    }
-    page_token = resp.next_page_token();
-    if (page_token.empty()) {
-      break;
-    }
-  }
+  Paginate(
+      [&](const std::string& token) {
+        // Cluster-scoped: ListClusters carries no namespace.
+        internal::osv::ListClustersRequest req;
+        if (!token.empty()) {
+          req.set_next_page_token(token);
+        }
+        return grpc_->ListClusters(req);
+      },
+      [&](const auto& resp) {
+        for (const auto& cluster : resp.clusters()) {
+          out.push_back(cluster.cluster_name());
+        }
+      });
   return out;
 }
 
@@ -789,43 +797,39 @@ NexusEndpointDescription Client::GetNexusEndpoint(const std::string& id) {
 
 std::vector<std::string> Client::ListNexusEndpoints() {
   std::vector<std::string> out;
-  std::string page_token;
-  for (;;) {
-    // Cluster-scoped: ListNexusEndpoints carries no namespace.
-    internal::osv::ListNexusEndpointsRequest req;
-    if (!page_token.empty()) {
-      req.set_next_page_token(page_token);
-    }
-    const auto resp = grpc_->ListNexusEndpoints(req);
-    for (const auto& endpoint : resp.endpoints()) {
-      out.push_back(endpoint.spec().name());
-    }
-    page_token = resp.next_page_token();
-    if (page_token.empty()) {
-      break;
-    }
-  }
+  Paginate(
+      [&](const std::string& token) {
+        // Cluster-scoped: ListNexusEndpoints carries no namespace.
+        internal::osv::ListNexusEndpointsRequest req;
+        if (!token.empty()) {
+          req.set_next_page_token(token);
+        }
+        return grpc_->ListNexusEndpoints(req);
+      },
+      [&](const auto& resp) {
+        for (const auto& endpoint : resp.endpoints()) {
+          out.push_back(endpoint.spec().name());
+        }
+      });
   return out;
 }
 
 std::vector<std::string> Client::ListWorkerDeployments() {
   std::vector<std::string> out;
-  std::string page_token;
-  for (;;) {
-    internal::wsv::ListWorkerDeploymentsRequest req;
-    req.set_namespace_(ns_);
-    if (!page_token.empty()) {
-      req.set_next_page_token(page_token);
-    }
-    const auto resp = grpc_->ListWorkerDeployments(req);
-    for (const auto& summary : resp.worker_deployments()) {
-      out.push_back(summary.name());
-    }
-    page_token = resp.next_page_token();
-    if (page_token.empty()) {
-      break;
-    }
-  }
+  Paginate(
+      [&](const std::string& token) {
+        internal::wsv::ListWorkerDeploymentsRequest req;
+        req.set_namespace_(ns_);
+        if (!token.empty()) {
+          req.set_next_page_token(token);
+        }
+        return grpc_->ListWorkerDeployments(req);
+      },
+      [&](const auto& resp) {
+        for (const auto& summary : resp.worker_deployments()) {
+          out.push_back(summary.name());
+        }
+      });
   return out;
 }
 
