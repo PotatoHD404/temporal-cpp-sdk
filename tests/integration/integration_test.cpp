@@ -1205,4 +1205,215 @@ TEST_F(IntegrationTest, WorkflowUpsertsSearchAttribute) {
   worker.Stop();
 }
 
+// ===========================================================================
+// Wave-1 parity additions: client reset / build-id, worker concurrency /
+// graceful drain / expanded metrics.
+// ===========================================================================
+
+// Tracks peak observed activity parallelism so a concurrency cap can be asserted.
+std::atomic<int> g_parallel_now{0};
+std::atomic<int> g_parallel_max{0};
+std::string TrackingSleepActivity(temporal::activity::Context&, int ms) {
+  const int now = ++g_parallel_now;
+  int prev = g_parallel_max.load();
+  while (now > prev && !g_parallel_max.compare_exchange_weak(prev, now)) {
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+  --g_parallel_now;
+  return "done";
+}
+
+// Fans out N activities so several are schedulable at once.
+int FanOutWorkflow(temporal::workflow::Context& ctx, int n) {
+  temporal::ActivityOptions o;
+  o.start_to_close_timeout = 30s;
+  std::vector<temporal::workflow::Future<std::string>> fs;
+  for (int i = 0; i < n; ++i) {
+    fs.push_back(ctx.ExecuteActivity<std::string>(o, "TrackSleep", 400));
+  }
+  for (auto& f : fs) {
+    f.Get();
+  }
+  return n;
+}
+
+// Flips a flag at its end so a graceful-drain test can assert it ran to completion.
+std::atomic<bool> g_drain_activity_done{false};
+std::string DrainSleepActivity(temporal::activity::Context&, int ms) {
+  std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+  g_drain_activity_done = true;
+  return "done";
+}
+std::string OneActivityWorkflow(temporal::workflow::Context& ctx, int ms) {
+  temporal::ActivityOptions o;
+  o.start_to_close_timeout = 30s;
+  return ctx.ExecuteActivity<std::string>(o, "DrainSleep", ms).Get();
+}
+
+// Captures timers/gauges/poll counters to assert the expanded metric set fires.
+class RichMetrics : public temporal::MetricsHandler {
+ public:
+  void Counter(const std::string& n, std::int64_t v, const Tags&) override {
+    if (n == "temporal_activity_poll_success") {
+      act_poll_ok += v;
+    }
+    if (n == "temporal_workflow_poll_timeout" || n == "temporal_activity_poll_timeout") {
+      timeouts += v;
+    }
+  }
+  void Gauge(const std::string& n, double v, const Tags&) override {
+    if (n == "temporal_activity_tasks_in_flight" && v >= 1.0) {
+      saw_inflight = true;
+    }
+  }
+  void Timer(const std::string& n, std::chrono::nanoseconds d, const Tags&) override {
+    if (n == "temporal_activity_task_execution_latency" && d.count() > 0) {
+      act_timer = true;
+    }
+    if (n == "temporal_workflow_task_execution_latency" && d.count() > 0) {
+      wf_timer = true;
+    }
+  }
+  std::atomic<std::int64_t> act_poll_ok{0};
+  std::atomic<std::int64_t> timeouts{0};
+  std::atomic<bool> act_timer{false};
+  std::atomic<bool> wf_timer{false};
+  std::atomic<bool> saw_inflight{false};
+};
+
+// POSITIVE: complete a workflow, reset it to the first completed workflow task,
+// and verify a new run id comes back (and differs from the original).
+TEST_F(IntegrationTest, ResetWorkflowStartsNewRun) {
+  const auto tq = UniqueTaskQueue("reset");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("SleepWorkflow", SleepWorkflow);
+  worker.Start();
+
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto handle = client_->StartWorkflow(o, "SleepWorkflow", 200);
+  EXPECT_EQ(handle.Result<std::string>(), "slept");
+
+  // Event 4 = first WorkflowTaskCompleted (Started=1, TaskScheduled=2,
+  // TaskStarted=3, TaskCompleted=4) — a valid WorkflowTaskFinishEventId.
+  const std::string new_run_id =
+      client_->ResetWorkflow(handle.id(), handle.run_id(), "integration test reset", 4);
+  EXPECT_FALSE(new_run_id.empty());
+  EXPECT_NE(new_run_id, handle.run_id());
+  worker.Stop();
+}
+
+// NEGATIVE: resetting a workflow that was never started fails.
+TEST_F(IntegrationTest, ResetNonexistentWorkflowThrows) {
+  const std::string missing = "no-such-wf-" + std::to_string(std::random_device{}());
+  EXPECT_THROW(client_->ResetWorkflow(missing, "", "reset missing", 4), temporal::RpcError);
+}
+
+// POSITIVE: add a build id as a new default set, then read it back.
+TEST_F(IntegrationTest, BuildIdUpdateThenGet) {
+  const auto tq = UniqueTaskQueue("buildid");
+  const std::string build_id = "v1-" + std::to_string(std::random_device{}());
+  client_->UpdateWorkerBuildIdCompatibility(tq, build_id);
+
+  std::vector<std::vector<std::string>> sets;
+  for (int i = 0; i < 40; ++i) {  // build-id state is eventually consistent
+    sets = client_->GetWorkerBuildIdCompatibility(tq);
+    if (!sets.empty()) {
+      break;
+    }
+    std::this_thread::sleep_for(250ms);
+  }
+  ASSERT_EQ(sets.size(), 1U);
+  ASSERT_EQ(sets[0].size(), 1U);
+  EXPECT_EQ(sets[0][0], build_id);
+}
+
+// NEGATIVE: Get on a task queue that never registered a build id returns empty
+// (the dev server reports no versioning data rather than erroring).
+TEST_F(IntegrationTest, BuildIdGetOnUnusedTaskQueueIsEmpty) {
+  const auto tq = UniqueTaskQueue("buildid-unused");
+  EXPECT_TRUE(client_->GetWorkerBuildIdCompatibility(tq).empty());
+}
+
+// POSITIVE: cap of 1 => observed max activity parallelism is exactly 1.
+TEST_F(IntegrationTest, ActivityConcurrencyCapSerializesExecutions) {
+  const auto tq = UniqueTaskQueue("conc-cap");
+  g_parallel_now = 0;
+  g_parallel_max = 0;
+  temporal::WorkerOptions wo;
+  wo.max_concurrent_activity_executions = 1;
+  wo.activity_task_pollers = 4;  // pollers > cap: proves the gate, not poll count, limits
+  temporal::worker::Worker worker(*client_, tq, wo);
+  worker.RegisterWorkflow("FanOutWorkflow", FanOutWorkflow);
+  worker.RegisterActivity("TrackSleep", TrackingSleepActivity);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h = client_->StartWorkflow(o, "FanOutWorkflow", 5);
+  EXPECT_EQ(h.Result<int>(), 5);
+  EXPECT_EQ(g_parallel_max.load(), 1);  // never two activities at once
+  worker.Stop();
+}
+
+// CONTROL: cap of 3 => more than one runs concurrently, but never exceeds the cap.
+TEST_F(IntegrationTest, ActivityConcurrencyAllowsParallelismUpToCap) {
+  const auto tq = UniqueTaskQueue("conc-par");
+  g_parallel_now = 0;
+  g_parallel_max = 0;
+  temporal::WorkerOptions wo;
+  wo.max_concurrent_activity_executions = 3;
+  wo.activity_task_pollers = 4;
+  temporal::worker::Worker worker(*client_, tq, wo);
+  worker.RegisterWorkflow("FanOutWorkflow", FanOutWorkflow);
+  worker.RegisterActivity("TrackSleep", TrackingSleepActivity);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h = client_->StartWorkflow(o, "FanOutWorkflow", 5);
+  EXPECT_EQ(h.Result<int>(), 5);
+  EXPECT_GT(g_parallel_max.load(), 1);  // some overlap occurred
+  EXPECT_LE(g_parallel_max.load(), 3);  // but never exceeded the cap
+  worker.Stop();
+}
+
+// A long activity already running when Stop() is called still completes (drain).
+TEST_F(IntegrationTest, GracefulShutdownDrainsInFlightActivity) {
+  const auto tq = UniqueTaskQueue("drain");
+  g_drain_activity_done = false;
+  temporal::WorkerOptions wo;
+  wo.graceful_shutdown_timeout = 10s;
+  temporal::worker::Worker worker(*client_, tq, wo);
+  worker.RegisterWorkflow("OneActivityWorkflow", OneActivityWorkflow);
+  worker.RegisterActivity("DrainSleep", DrainSleepActivity);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h = client_->StartWorkflow(o, "OneActivityWorkflow", 1500);
+  std::this_thread::sleep_for(500ms);  // let the activity start
+  worker.Stop();                       // must wait for the in-flight activity
+  EXPECT_TRUE(g_drain_activity_done.load());
+  (void)h;
+}
+
+// Timers, in-flight gauge, and poll counters all fire on the metrics handler.
+TEST_F(IntegrationTest, MetricsHandlerReceivesTimersGaugesAndPollCounters) {
+  const auto tq = UniqueTaskQueue("metrics-rich");
+  auto m = std::make_shared<RichMetrics>();
+  temporal::WorkerOptions wo;
+  wo.metrics_handler = m;
+  temporal::worker::Worker worker(*client_, tq, wo);
+  worker.RegisterWorkflow("EchoWorkflow", EchoWorkflow);
+  worker.RegisterActivity("Echo", EchoActivity);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h = client_->StartWorkflow(o, "EchoWorkflow", std::string("hi"));
+  EXPECT_EQ(h.Result<std::string>(), "hi");
+  EXPECT_TRUE(m->act_timer.load());     // activity execution timed
+  EXPECT_TRUE(m->wf_timer.load());      // workflow task timed
+  EXPECT_GT(m->act_poll_ok.load(), 0);  // at least one successful poll
+  EXPECT_TRUE(m->saw_inflight.load());  // in-flight gauge emitted >= 1
+  worker.Stop();
+}
+
 }  // namespace

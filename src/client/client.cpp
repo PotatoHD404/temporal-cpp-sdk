@@ -449,6 +449,55 @@ std::vector<std::string> Client::ListSchedules() {
   return out;
 }
 
+std::string Client::ResetWorkflow(const std::string& workflow_id, const std::string& run_id,
+                                  const std::string& reason,
+                                  std::int64_t workflow_task_finish_event_id) {
+  internal::wsv::ResetWorkflowExecutionRequest req;
+  req.set_namespace_(ns_);
+  req.mutable_workflow_execution()->set_workflow_id(workflow_id);
+  if (!run_id.empty()) {
+    req.mutable_workflow_execution()->set_run_id(run_id);
+  }
+  req.set_reason(reason);
+  req.set_workflow_task_finish_event_id(workflow_task_finish_event_id);
+  req.set_request_id(internal::NewUuid());
+  return grpc_->ResetWorkflowExecution(req).run_id();
+}
+
+std::vector<std::vector<std::string>> Client::GetWorkerBuildIdCompatibility(
+    const std::string& task_queue) {
+  internal::wsv::GetWorkerBuildIdCompatibilityRequest req;
+  req.set_namespace_(ns_);
+  req.set_task_queue(task_queue);
+  const auto resp = grpc_->GetWorkerBuildIdCompatibility(req);
+  std::vector<std::vector<std::string>> out;
+  for (const auto& set : resp.major_version_sets()) {
+    std::vector<std::string> ids;
+    for (const auto& id : set.build_ids()) {
+      ids.push_back(id);
+    }
+    out.push_back(std::move(ids));
+  }
+  return out;
+}
+
+void Client::UpdateWorkerBuildIdCompatibility(const std::string& task_queue,
+                                              const std::string& build_id) {
+  internal::wsv::UpdateWorkerBuildIdCompatibilityRequest req;
+  req.set_namespace_(ns_);
+  req.set_task_queue(task_queue);
+  req.set_add_new_build_id_in_new_default_set(build_id);
+  grpc_->UpdateWorkerBuildIdCompatibility(req);
+}
+
+void Client::PromoteWorkerBuildIdSet(const std::string& task_queue, const std::string& build_id) {
+  internal::wsv::UpdateWorkerBuildIdCompatibilityRequest req;
+  req.set_namespace_(ns_);
+  req.set_task_queue(task_queue);
+  req.set_promote_set_by_build_id(build_id);
+  grpc_->UpdateWorkerBuildIdCompatibility(req);
+}
+
 void Client::CompleteActivityPayloads(const std::string& task_token, const Payloads& result) {
   internal::wsv::RespondActivityTaskCompletedRequest req;
   req.set_namespace_(ns_);

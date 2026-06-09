@@ -274,4 +274,31 @@ wsv::UpdateWorkflowExecutionResponse GrpcClient::UpdateWorkflowExecution(
       });
 }
 
+wsv::ResetWorkflowExecutionResponse GrpcClient::ResetWorkflowExecution(
+    const wsv::ResetWorkflowExecutionRequest& req) {
+  return UnaryCall<wsv::ResetWorkflowExecutionResponse>(
+      "ResetWorkflowExecution", false,
+      [&](grpc::ClientContext* c, wsv::ResetWorkflowExecutionResponse* p) {
+        return stub_->ResetWorkflowExecution(c, req, p);
+      });
+}
+
+wsv::GetWorkerBuildIdCompatibilityResponse GrpcClient::GetWorkerBuildIdCompatibility(
+    const wsv::GetWorkerBuildIdCompatibilityRequest& req) {
+  return UnaryCall<wsv::GetWorkerBuildIdCompatibilityResponse>(
+      "GetWorkerBuildIdCompatibility", false,
+      [&](grpc::ClientContext* c, wsv::GetWorkerBuildIdCompatibilityResponse* p) {
+        return stub_->GetWorkerBuildIdCompatibility(c, req, p);
+      });
+}
+
+wsv::UpdateWorkerBuildIdCompatibilityResponse GrpcClient::UpdateWorkerBuildIdCompatibility(
+    const wsv::UpdateWorkerBuildIdCompatibilityRequest& req) {
+  return UnaryCall<wsv::UpdateWorkerBuildIdCompatibilityResponse>(
+      "UpdateWorkerBuildIdCompatibility", false,
+      [&](grpc::ClientContext* c, wsv::UpdateWorkerBuildIdCompatibilityResponse* p) {
+        return stub_->UpdateWorkerBuildIdCompatibility(c, req, p);
+      });
+}
+
 }  // namespace temporal::internal

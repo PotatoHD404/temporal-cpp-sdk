@@ -148,6 +148,20 @@ class Client {
   // All schedule ids in the namespace (pages through results).
   std::vector<std::string> ListSchedules();
 
+  // Reset a workflow back to a point in its history, replaying events after the
+  // given WorkflowTaskFinishEventId onto a fresh run. `run_id` empty targets the
+  // current run; returns the new run id. (`reason` is recorded on the new run.)
+  std::string ResetWorkflow(const std::string& workflow_id, const std::string& run_id,
+                            const std::string& reason, std::int64_t workflow_task_finish_event_id);
+
+  // Worker Build-ID compatibility (task-queue versioning). Each inner vector is
+  // one compatible set; the last build id in a set is its default.
+  std::vector<std::vector<std::string>> GetWorkerBuildIdCompatibility(const std::string& task_queue);
+  // Add `build_id` as a brand-new default set on `task_queue`.
+  void UpdateWorkerBuildIdCompatibility(const std::string& task_queue, const std::string& build_id);
+  // Promote the existing set that already contains `build_id` to be the default.
+  void PromoteWorkerBuildIdSet(const std::string& task_queue, const std::string& build_id);
+
   // Complete or fail an activity that deferred completion via
   // activity::Context::SetWillCompleteAsync(), identified by its task token
   // (activity::Context::GetInfo().task_token).

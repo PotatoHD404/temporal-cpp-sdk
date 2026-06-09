@@ -29,7 +29,8 @@ cache. This page is the honest accounting.
 | Get handle to existing run | ✅ | |
 | Signal-with-start | ✅ | `Client::SignalWithStartWorkflow` |
 | List / count / describe workflows | ✅ | `Describe`, `ListWorkflows`, `CountWorkflows` (visibility query) |
-| Reset / batch operations | ❌ | |
+| Reset workflow | ✅ | `Client::ResetWorkflow` (ResetWorkflowExecution); e2e-verified |
+| Batch operations | ❌ | |
 | Schedules client | ✅ | create / describe / delete / update / list / trigger / pause / unpause (interval spec) |
 | Operator & Cloud services | ❌ | |
 
@@ -41,10 +42,13 @@ cache. This page is the honest accounting.
 | Poller threads, start/stop/run | ✅ | |
 | Sticky cache (resident workflows) | ✅ | incremental-history continuations |
 | Bounded cache LRU / eviction tuning | ✅ | `max_cached_workflows` (LRU eviction) |
-| Concurrency / rate limiting (wired) | 🟡 | options exist; not all enforced |
-| Poller autoscaling, graceful drain | ❌ | |
-| Worker versioning / Build IDs / deployments | ❌ | |
-| Session workers | ❌ | |
+| Concurrent-execution caps | ✅ | `max_concurrent_activity/workflow_task_executions` enforced by a gate; e2e-verified |
+| Rate limiting (per-second) | ❌ | task/activity-per-second throttles not yet enforced |
+| Graceful drain | ✅ | `graceful_shutdown_timeout`; Stop() drains in-flight tasks; e2e-verified |
+| Poller autoscaling | 🟡 | conservative idle-park within the fixed poller bounds; not true elasticity |
+| Worker Build-ID compatibility (v0.1) | ✅ | `Get/Update/PromoteWorkerBuildIdCompatibility`; e2e-verified |
+| Worker versioning rules / deployments | ❌ | newer rules-based versioning + deployments API |
+| Session workers | 🟡 | host-unique session-queue routing + cap; no session lifecycle (create/complete/pin) |
 
 ## Workflow authoring
 
@@ -85,10 +89,10 @@ cache. This page is the honest accounting.
 |---|---|---|
 | JSON / nil / bytes converters | ✅ | nlohmann-json default stack |
 | Custom converters | ✅ | |
-| Proto / ProtoJSON converters | 🟡 | binary protobuf ✅ (seamless typed `ToPayload`/`FromPayload`); ProtoJSON ❌ |
+| Proto / ProtoJSON converters | ✅ | binary protobuf + proto-json (`WithProtoJson`), both directions; unit-tested |
 | Payload codecs (encryption/compression) | 🟡 | `PayloadCodec` interface + chain applied to every payload + base64 reference codec; no bundled encryption/compression codec |
-| Custom failure converter | ❌ | |
-| Large-payload / external storage | ❌ | |
+| Custom failure converter | 🟡 | `FailureConverter` interface + `DefaultFailureConverter` + `DataConverter` hook (application-failure round-trips losslessly); not yet wired into the live error path |
+| Large-payload / external storage | 🟡 | `PayloadStorage` interface + in-memory reference impl; no real external store (S3/GCS) bundled |
 
 ## Determinism & safety
 
@@ -107,7 +111,7 @@ cache. This page is the honest accounting.
 |---|---|---|
 | TLS / mTLS / API-key auth | 🟡 | implemented (`ClientOptions::tls` + `api_key`, SslCredentials + per-call auth); **e2e-unverified locally** — no TLS Temporal server in the harness |
 | Interceptors (client + worker) | ❌ | |
-| Metrics | 🟡 | `MetricsHandler` interface (counter/gauge/timer) + worker task counters; not the full Go metric set |
+| Metrics | 🟡 | `MetricsHandler` (counter/gauge/timer): task counters + execution-latency timers + in-flight gauge + poll success/timeout counters; e2e-verified; not the full Go metric set |
 | Tracing / OpenTelemetry | ❌ | |
 | Structured logging | ✅ | pluggable `log::Logger` |
 | Test framework (time-skip, replayer) | 🟡 | replayer ✅ (`Worker::ReplayWorkflowHistory`); time-skip ❌ |

@@ -26,6 +26,7 @@ inline constexpr const char* kNull = "binary/null";
 inline constexpr const char* kRaw = "binary/plain";
 inline constexpr const char* kJson = "json/plain";
 inline constexpr const char* kProto = "binary/protobuf";
+inline constexpr const char* kProtoJson = "json/protobuf";  // proto serialized as JSON
 }  // namespace encodings
 
 }  // namespace temporal

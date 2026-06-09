@@ -1,11 +1,18 @@
 #include <temporal/converter/data_converter.h>
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
+// Protobuf runtime is included only here, never in the public header (see the
+// forward declaration of google::protobuf::Message in data_converter.h).
+#include "google/protobuf/message.h"
+#include "google/protobuf/util/json_util.h"
 
 namespace temporal {
 namespace {
@@ -127,6 +134,44 @@ std::string DataConverter::ProtoBytes(const Payload& payload) const {
   return payload.data;
 }
 
+Payload DataConverter::ToProtoJsonPayload(const google::protobuf::Message& message,
+                                          const std::string& message_type) const {
+  std::string json;
+  const auto status = google::protobuf::util::MessageToJsonString(message, &json);
+  if (!status.ok()) {
+    throw DataConverterError("failed to encode protobuf payload as json/protobuf: " +
+                             std::string(status.message()));
+  }
+  Payload p;
+  p.metadata[metadata_keys::kEncoding] = encodings::kProtoJson;
+  p.metadata[metadata_keys::kMessageType] = message_type;
+  p.data = std::move(json);
+  return p;
+}
+
+void DataConverter::FromProtoPayload(const Payload& payload,
+                                     google::protobuf::Message& out) const {
+  const auto it = payload.metadata.find(std::string(metadata_keys::kEncoding));
+  const std::string enc = it == payload.metadata.end() ? std::string() : it->second;
+  if (enc == encodings::kProto) {
+    if (!out.ParseFromString(payload.data)) {
+      throw DataConverterError("failed to parse protobuf payload as " +
+                               std::string(out.GetTypeName()));
+    }
+    return;
+  }
+  if (enc == encodings::kProtoJson) {
+    const auto status = google::protobuf::util::JsonStringToMessage(payload.data, &out);
+    if (!status.ok()) {
+      throw DataConverterError("failed to parse json/protobuf payload as " +
+                               std::string(out.GetTypeName()) + ": " +
+                               std::string(status.message()));
+    }
+    return;
+  }
+  throw DataConverterError("expected a protobuf payload, got encoding: " + enc);
+}
+
 namespace {
 
 constexpr const char* kB64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -216,6 +261,53 @@ std::shared_ptr<DataConverter> DataConverter::WithCodecs(
   auto dc = std::make_shared<DataConverter>();
   dc->codecs_ = std::move(codecs);
   return dc;
+}
+
+std::shared_ptr<DataConverter> DataConverter::WithProtoJson() {
+  auto dc = std::make_shared<DataConverter>();
+  dc->proto_json_ = true;
+  return dc;
+}
+
+void DataConverter::SetProtoJson(bool enabled) { proto_json_ = enabled; }
+
+void DataConverter::WithFailureConverter(std::shared_ptr<FailureConverter> failure_converter) {
+  failure_converter_ = std::move(failure_converter);
+}
+
+namespace {
+
+// Metadata key flagging a payload whose `data` is an external-store reference
+// rather than the body itself (see InMemoryPayloadStorage).
+constexpr const char* kRemoteRefKey = "remote-codec-ref";
+
+}  // namespace
+
+Payload InMemoryPayloadStorage::Store(const Payload& payload) const {
+  // Key the blob by a stable hash of the body so identical bodies coalesce.
+  const std::string key =
+      std::to_string(std::hash<std::string>{}(payload.data)) + "-" +
+      std::to_string(payload.data.size());
+  blobs_[key] = payload.data;
+  Payload out = payload;  // preserve inner metadata (encoding, message type, …)
+  out.metadata[kRemoteRefKey] = key;
+  out.data = key;  // body replaced by its reference
+  return out;
+}
+
+Payload InMemoryPayloadStorage::Resolve(const Payload& payload) const {
+  const auto it = payload.metadata.find(kRemoteRefKey);
+  if (it == payload.metadata.end()) {
+    return payload;  // not a reference produced by this store
+  }
+  const auto blob = blobs_.find(it->second);
+  if (blob == blobs_.end()) {
+    throw DataConverterError("payload storage reference not found: " + it->second);
+  }
+  Payload out = payload;
+  out.data = blob->second;  // restore body
+  out.metadata.erase(kRemoteRefKey);
+  return out;
 }
 
 }  // namespace temporal

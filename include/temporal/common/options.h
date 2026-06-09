@@ -127,6 +127,38 @@ struct WorkerOptions {
   int max_cached_workflows = 0;
   // Optional metrics sink; nullptr disables metric emission.
   std::shared_ptr<MetricsHandler> metrics_handler;
+
+  // Caps how many activity / workflow tasks may execute concurrently across all
+  // pollers (each poller blocks before dispatching once the cap is reached).
+  // 0 => unlimited. Distinct from the poller counts above, which bound how many
+  // long-polls are in flight, not how many tasks run at once.
+  int max_concurrent_activity_executions = 0;
+  int max_concurrent_workflow_task_executions = 0;
+
+  // On Stop(), how long to wait for in-flight task executions to finish after
+  // polling for new tasks ceases. 0 => don't wait (join pollers immediately,
+  // which still lets any in-flight Handle() run to completion before its thread
+  // exits). A positive value bounds the drain so Stop() cannot hang forever.
+  std::chrono::milliseconds graceful_shutdown_timeout{0};
+
+  // Poller autoscaling (conservative). When enabled, each poll loop parks itself
+  // after observing `autoscaling_idle_polls_before_park` consecutive empty polls
+  // and resumes on the next non-empty poll, keeping at least
+  // `min_concurrent_pollers` active per loop kind. This bounds wasted long-polls
+  // under light load without ever exceeding the configured poller counts (which
+  // act as the maximum). It does NOT spawn pollers beyond those counts.
+  bool enable_poller_autoscaling = false;
+  int min_concurrent_pollers = 1;
+  int autoscaling_idle_polls_before_park = 5;
+
+  // Session workers (partial). When enabled, the worker additionally long-polls a
+  // host-unique session task queue (derived from the base queue + a per-worker
+  // UUID) so session-pinned activity tasks routed to this host are picked up.
+  // `max_concurrent_sessions` caps activity executions drawn from that queue.
+  // NOTE: full session lifecycle (CreateSession/CompleteSession, sticky pinning)
+  // is not implemented; this only establishes the host-specific routing path.
+  bool enable_sessions = false;
+  int max_concurrent_sessions = 0;
 };
 
 // Options for `Client::CreateSchedule`. The schedule runs the given workflow on a

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -11,6 +12,14 @@
 
 #include <temporal/common/errors.h>
 #include <temporal/common/payload.h>
+#include <temporal/converter/failure_converter.h>
+
+// Forward-declared (never included) so this public header stays free of the
+// protobuf runtime; the proto-json paths take the message by its base-class
+// reference and do the actual work in data_converter.cpp.
+namespace google::protobuf {
+class Message;
+}  // namespace google::protobuf
 
 namespace temporal {
 
@@ -62,6 +71,41 @@ class Base64PayloadCodec : public PayloadCodec {
   Payload Decode(const Payload& payload) const override;
 };
 
+// Offloads large payload bodies to an external store ("remote payload codec"):
+// Store() persists the bytes somewhere and returns a payload whose `data` is a
+// reference (key) instead of the body; Resolve() fetches the body back. The
+// payload's inner metadata (encoding, message type, …) is preserved so the
+// resolved payload decodes identically. Mirrors the SDK pattern used to keep
+// oversized inputs/results out of workflow history.
+class PayloadStorage {
+ public:
+  PayloadStorage() = default;
+  virtual ~PayloadStorage() = default;
+  PayloadStorage(const PayloadStorage&) = delete;
+  PayloadStorage& operator=(const PayloadStorage&) = delete;
+  PayloadStorage(PayloadStorage&&) = delete;
+  PayloadStorage& operator=(PayloadStorage&&) = delete;
+
+  // Store `payload`'s body externally; return a reference payload.
+  virtual Payload Store(const Payload& payload) const = 0;
+  // Resolve a reference payload produced by Store() back to its body. A payload
+  // that carries no reference is returned unchanged.
+  virtual Payload Resolve(const Payload& payload) const = 0;
+};
+
+// In-memory reference store for tests/local runs: hashes the body into a key,
+// keeps the bytes in a process-local table, and stamps the reference metadata.
+// NOT a real external store — no S3/GCS/durability — purely a wiring example.
+class InMemoryPayloadStorage : public PayloadStorage {
+ public:
+  Payload Store(const Payload& payload) const override;
+  Payload Resolve(const Payload& payload) const override;
+
+ private:
+  // mutable: Store() is logically const but populates the backing table.
+  mutable std::map<std::string, std::string> blobs_;
+};
+
 namespace detail {
 // Detects a protobuf-generated message via its own member functions, so this
 // header never has to include the protobuf runtime. Proto values then encode as
@@ -91,6 +135,21 @@ class DataConverter {
   // payload). Set the result on ClientOptions::data_converter.
   static std::shared_ptr<DataConverter> WithCodecs(std::vector<std::shared_ptr<PayloadCodec>> codecs);
 
+  // Default stack whose proto messages encode as `json/protobuf` instead of
+  // `binary/protobuf`. Decoding still accepts BOTH encodings (it dispatches on
+  // the payload's `encoding` metadata), so this peer can always read either form.
+  static std::shared_ptr<DataConverter> WithProtoJson();
+
+  // Opt into / out of proto-json encoding on this converter (default: false ⇒
+  // binary protobuf). Only affects encode; decode handles both encodings.
+  void SetProtoJson(bool enabled);
+  bool proto_json() const { return proto_json_; }
+
+  // Install a custom failure converter used to translate C++ errors to/from the
+  // Temporal failure proto, plus its accessor (null until set).
+  void WithFailureConverter(std::shared_ptr<FailureConverter> failure_converter);
+  const std::shared_ptr<FailureConverter>& failure_converter() const { return failure_converter_; }
+
   Payload ToPayloadJson(const nlohmann::json& value) const;
   nlohmann::json FromPayloadJson(const Payload& payload) const;
 
@@ -99,11 +158,26 @@ class DataConverter {
   Payload ToProtoPayload(const std::string& serialized, const std::string& message_type) const;
   std::string ProtoBytes(const Payload& payload) const;
 
+  // Proto-json payloads. ToProtoJsonPayload serializes a message via protobuf's
+  // JSON mapping under `json/protobuf`. FromProtoPayload decodes a proto payload
+  // of EITHER encoding (binary or json) into `out`, throwing on failure. Both
+  // take the message by its protobuf base reference so this header needs no proto
+  // include; the implementations live in data_converter.cpp.
+  Payload ToProtoJsonPayload(const ::google::protobuf::Message& message,
+                             const std::string& message_type) const;
+  void FromProtoPayload(const Payload& payload, ::google::protobuf::Message& out) const;
+
   template <class T>
   Payload ToPayload(const T& value) const {
     Payload p;
     if constexpr (detail::is_proto_message<T>::value) {
-      p = ToProtoPayload(value.SerializeAsString(), std::string(value.GetTypeName()));
+      // Default stays binary protobuf; WithProtoJson()/SetProtoJson(true) flips
+      // it to the proto-json mapping. (value is a Message subclass.)
+      if (proto_json_) {
+        p = ToProtoJsonPayload(value, std::string(value.GetTypeName()));
+      } else {
+        p = ToProtoPayload(value.SerializeAsString(), std::string(value.GetTypeName()));
+      }
     } else if constexpr (std::is_same_v<std::decay_t<T>, nlohmann::json>) {
       p = ToPayloadJson(value);
     } else {
@@ -116,11 +190,10 @@ class DataConverter {
   T FromPayload(const Payload& payload) const {
     const Payload decoded = ApplyCodecsDecode(payload);
     if constexpr (detail::is_proto_message<T>::value) {
+      // Dispatches on the payload's encoding (binary vs json) regardless of the
+      // proto_json_ toggle, so either form is always readable. (msg is a Message.)
       T msg;
-      if (!msg.ParseFromString(ProtoBytes(decoded))) {
-        throw DataConverterError("failed to parse protobuf payload as " +
-                                 std::string(msg.GetTypeName()));
-      }
+      FromProtoPayload(decoded, msg);
       return msg;
     } else {
       nlohmann::json j = FromPayloadJson(decoded);
@@ -147,6 +220,8 @@ class DataConverter {
 
   std::vector<std::shared_ptr<PayloadConverter>> converters_;
   std::vector<std::shared_ptr<PayloadCodec>> codecs_;
+  std::shared_ptr<FailureConverter> failure_converter_;
+  bool proto_json_ = false;
 };
 
 }  // namespace temporal

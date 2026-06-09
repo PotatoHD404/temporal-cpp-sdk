@@ -67,6 +67,12 @@ class GrpcClient {
       const wsv::RespondQueryTaskCompletedRequest& req);
   wsv::UpdateWorkflowExecutionResponse UpdateWorkflowExecution(
       const wsv::UpdateWorkflowExecutionRequest& req);
+  wsv::ResetWorkflowExecutionResponse ResetWorkflowExecution(
+      const wsv::ResetWorkflowExecutionRequest& req);
+  wsv::GetWorkerBuildIdCompatibilityResponse GetWorkerBuildIdCompatibility(
+      const wsv::GetWorkerBuildIdCompatibilityRequest& req);
+  wsv::UpdateWorkerBuildIdCompatibilityResponse UpdateWorkerBuildIdCompatibility(
+      const wsv::UpdateWorkerBuildIdCompatibilityRequest& req);
 
  private:
   // Issues one unary RPC, attaching auth metadata (Authorization + namespace) when
