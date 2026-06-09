@@ -589,6 +589,9 @@ WorkerVersioningRules Client::GetWorkerVersioningRules(const std::string& task_q
   for (const auto& rule : resp.assignment_rules()) {
     out.assignment_rule_target_build_ids.push_back(rule.rule().target_build_id());
   }
+  for (const auto& rule : resp.compatible_redirect_rules()) {
+    out.redirect_rules.emplace_back(rule.rule().source_build_id(), rule.rule().target_build_id());
+  }
   out.conflict_token = resp.conflict_token();
   return out;
 }
@@ -604,6 +607,19 @@ void Client::InsertWorkerAssignmentRule(const std::string& task_queue,
   auto* insert = req.mutable_insert_assignment_rule();
   insert->set_rule_index(0);
   insert->mutable_rule()->set_target_build_id(target_build_id);
+  grpc_->UpdateWorkerVersioningRules(req);
+}
+
+void Client::AddWorkerRedirectRule(const std::string& task_queue,
+                                   const std::string& source_build_id,
+                                   const std::string& target_build_id) {
+  internal::wsv::UpdateWorkerVersioningRulesRequest req;
+  req.set_namespace_(ns_);
+  req.set_task_queue(task_queue);
+  req.set_conflict_token(GetWorkerVersioningRules(task_queue).conflict_token);
+  auto* add = req.mutable_add_compatible_redirect_rule();
+  add->mutable_rule()->set_source_build_id(source_build_id);
+  add->mutable_rule()->set_target_build_id(target_build_id);
   grpc_->UpdateWorkerVersioningRules(req);
 }
 

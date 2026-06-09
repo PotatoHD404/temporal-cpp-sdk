@@ -2067,4 +2067,22 @@ TEST_F(IntegrationTest, ClientOutboundInterceptorWrapsStartWorkflow) {
   worker.Stop();
 }
 
+// POSITIVE: add a compatible-redirect rule (source build id -> target) and read it
+// back (gradual build-id rollout, rules-based worker versioning).
+TEST_F(IntegrationTest, AddAndReadWorkerRedirectRule) {
+  const auto tq = UniqueTaskQueue("vredirect") + "-" + std::to_string(std::random_device{}());
+  const std::string target = "vt-" + std::to_string(std::random_device{}());
+  const std::string source = "vs-" + std::to_string(std::random_device{}());
+  client_->InsertWorkerAssignmentRule(tq, target);     // target = current default
+  client_->AddWorkerRedirectRule(tq, source, target);  // redirect old `source` -> `target`
+  const auto rules = client_->GetWorkerVersioningRules(tq);
+  bool found = false;
+  for (const auto& [s, t] : rules.redirect_rules) {
+    if (s == source && t == target) {
+      found = true;
+    }
+  }
+  EXPECT_TRUE(found);
+}
+
 }  // namespace

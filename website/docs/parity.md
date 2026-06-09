@@ -48,7 +48,7 @@ cache. This page is the honest accounting.
 | Graceful drain | ✅ | `graceful_shutdown_timeout`; Stop() drains in-flight tasks; e2e-verified |
 | Poller autoscaling | 🟡 | conservative idle-park within the fixed poller bounds; not true elasticity |
 | Worker Build-ID compatibility (v0.1) | ✅ | `Get/Update/PromoteWorkerBuildIdCompatibility`; e2e-verified |
-| Worker versioning rules / deployments | 🟡 | assignment rules (`InsertWorkerAssignmentRule`/`GetWorkerVersioningRules`) ✅ e2e; redirect rules + deployments ❌ |
+| Worker versioning rules / deployments | 🟡 | assignment + compatible-redirect rules (`InsertWorkerAssignmentRule`/`AddWorkerRedirectRule`/`GetWorkerVersioningRules`) ✅ e2e; worker deployments ❌ |
 | Session workers | 🟡 | host-unique session-queue routing + cap; no session lifecycle (create/complete/pin) |
 
 ## Workflow authoring

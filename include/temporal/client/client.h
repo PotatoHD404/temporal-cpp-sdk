@@ -104,6 +104,7 @@ class WorkflowHandle {
 // subsequent UpdateWorkerVersioningRules call (rules-based worker versioning).
 struct WorkerVersioningRules {
   std::vector<std::string> assignment_rule_target_build_ids;
+  std::vector<std::pair<std::string, std::string>> redirect_rules;  // (source, target) build ids
   std::string conflict_token;  // bytes; opaque, echoed back on update
 };
 
@@ -215,6 +216,10 @@ class Client {
   // `target_build_id`. (The server may require worker-versioning dynamic config.)
   void InsertWorkerAssignmentRule(const std::string& task_queue,
                                   const std::string& target_build_id);
+  // Add a compatible-redirect rule routing `source_build_id` to `target_build_id`
+  // (gradual build-id rollout).
+  void AddWorkerRedirectRule(const std::string& task_queue, const std::string& source_build_id,
+                             const std::string& target_build_id);
 
   // Batch operations: act on every workflow matched by a visibility `query`.
   // `job_id` identifies the batch for Describe/Stop; reuse it to poll progress.
