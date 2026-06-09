@@ -2213,4 +2213,32 @@ TEST_F(IntegrationTest, SessionLifecyclePinsAndReleases) {
   EXPECT_TRUE(result.ends_with("|a|b")) << "got: " << result;
 }
 
+// A type-safe activity handle (TEMPORAL_ACTIVITY): the type name "TypedIncrement"
+// and the int result are deduced from the handle — no string, no explicit <R>.
+int TypedIncrement(temporal::activity::Context&, int n) { return n + 1; }
+TEMPORAL_ACTIVITY(TypedIncrement);
+
+std::string TypedHandleWorkflow(temporal::workflow::Context& ctx, int base) {
+  temporal::ActivityOptions o;
+  o.start_to_close_timeout = 10s;
+  const int a = ctx.ExecuteActivity(o, TypedIncrement_activity, base).Get();  // R deduced
+  const int b = ctx.ExecuteActivity(o, TypedIncrement_activity, a).Get();
+  return std::to_string(b);
+}
+
+// POSITIVE: registering + invoking an activity through its typed handle works
+// end-to-end and is wire-identical to the string form.
+TEST_F(IntegrationTest, TypedActivityHandleRoundTrip) {
+  const auto tq = UniqueTaskQueue("typed-handle");
+  temporal::worker::Worker worker(*client_, tq);
+  worker.RegisterWorkflow("TypedHandleWorkflow", TypedHandleWorkflow);
+  worker.Register(TypedIncrement_activity);  // typed registration: name from the handle
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  auto h = client_->StartWorkflow(o, "TypedHandleWorkflow", 40);
+  EXPECT_EQ(h.Result<std::string>(), "42");
+  worker.Stop();
+}
+
 }  // namespace

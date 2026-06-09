@@ -12,6 +12,7 @@
 #include <temporal/common/session.h>
 #include <temporal/converter/data_converter.h>
 #include <temporal/internal/callable_traits.h>
+#include <temporal/typed_handles.h>
 #include <temporal/internal/workflow_outbound.h>
 #include <temporal/log/logger.h>
 #include <temporal/workflow/channel.h>
@@ -50,6 +51,16 @@ class Context {
                             const Args&... args) {
     Payloads input = converter_->ToPayloads(args...);
     return Future<R>(env_->ScheduleActivity(activity_type, input, options), converter_, env_);
+  }
+
+  // Schedule an activity from a typed handle (TEMPORAL_ACTIVITY): the type name and
+  // result type come from the handle, so no string and no explicit `<R>` are needed
+  // and a wrong argument type is a compile error.
+  template <auto Fn, class... Args>
+  Future<typename ActivityRef<Fn>::result_type> ExecuteActivity(const ActivityOptions& options,
+                                                                const ActivityRef<Fn>& ref,
+                                                                const Args&... args) {
+    return ExecuteActivity<typename ActivityRef<Fn>::result_type>(options, ref.name, args...);
   }
 
   // Start a timer; returns a Future that resolves when it fires.

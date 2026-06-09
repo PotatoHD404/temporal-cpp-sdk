@@ -14,6 +14,7 @@
 #include <temporal/common/payload.h>
 #include <temporal/converter/data_converter.h>
 #include <temporal/internal/callable_traits.h>
+#include <temporal/typed_handles.h>
 #include <temporal/workflow/context.h>
 
 namespace temporal {
@@ -58,6 +59,13 @@ class Worker {
                   "activity function must take activity::Context& as its first parameter");
     RegisterActivityFn(std::move(name),
                        MakeActivityFn<typename Sig::ret, typename Sig::args>(std::move(fn)));
+  }
+
+  // Register an activity from a typed handle (TEMPORAL_ACTIVITY): the type name and
+  // signature come from the handle, so they can't drift from the call site.
+  template <auto Fn>
+  void Register(const ActivityRef<Fn>& ref) {
+    RegisterActivity(std::string(ref.name), Fn);
   }
 
   void Start();  // start pollers (non-blocking)
