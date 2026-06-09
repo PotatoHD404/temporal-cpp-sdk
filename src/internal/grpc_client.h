@@ -53,6 +53,12 @@ class GrpcClient {
       const wsv::RespondWorkflowTaskFailedRequest& req);
   wsv::PollActivityTaskQueueResponse PollActivityTaskQueue(
       const wsv::PollActivityTaskQueueRequest& req);
+  wsv::PollNexusTaskQueueResponse PollNexusTaskQueue(
+      const wsv::PollNexusTaskQueueRequest& req);
+  wsv::RespondNexusTaskCompletedResponse RespondNexusTaskCompleted(
+      const wsv::RespondNexusTaskCompletedRequest& req);
+  wsv::RespondNexusTaskFailedResponse RespondNexusTaskFailed(
+      const wsv::RespondNexusTaskFailedRequest& req);
   wsv::RespondActivityTaskCompletedResponse RespondActivityTaskCompleted(
       const wsv::RespondActivityTaskCompletedRequest& req);
   wsv::RespondActivityTaskFailedResponse RespondActivityTaskFailed(

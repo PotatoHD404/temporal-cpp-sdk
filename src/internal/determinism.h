@@ -29,6 +29,7 @@ struct CommandEvent {
     RequestCancelExternalWorkflow,  // RequestCancelExternalWorkflowExecution <-> ...Initiated
     SignalExternalWorkflow,  // SignalExternalWorkflowExecution <-> ...Initiated
     UpsertSearchAttributes,  // UpsertWorkflowSearchAttributes <-> ...SearchAttributes event
+    NexusOperation,     // ScheduleNexusOperation <-> NexusOperationScheduled
     Marker,             // RecordMarker         <-> MarkerRecorded
     CompleteWorkflow,   // CompleteWorkflowExecution  <-> WorkflowExecutionCompleted
     FailWorkflow,       // FailWorkflowExecution      <-> WorkflowExecutionFailed
@@ -43,7 +44,7 @@ struct CommandEvent {
 // Command-kind display names, indexed by enum value (the enum is contiguous from
 // 0). The static_assert below ties the table size to the enum count, so adding a
 // Kind without a name fails to compile rather than silently returning "Unknown".
-inline constexpr std::array<std::string_view, 12> kCommandKindNames = {
+inline constexpr std::array<std::string_view, 13> kCommandKindNames = {
     "ScheduleActivity",
     "RequestCancelActivity",
     "StartTimer",
@@ -52,6 +53,7 @@ inline constexpr std::array<std::string_view, 12> kCommandKindNames = {
     "RequestCancelExternalWorkflowExecution",
     "SignalExternalWorkflowExecution",
     "UpsertWorkflowSearchAttributes",
+    "ScheduleNexusOperation",
     "RecordMarker",
     "CompleteWorkflowExecution",
     "FailWorkflowExecution",
@@ -83,6 +85,7 @@ inline bool CommandMatchesEvent(const CommandEvent& produced, const CommandEvent
     case CommandEvent::Kind::UpsertSearchAttributes:  // no id; ordered position carries it
     case CommandEvent::Kind::Timer:
     case CommandEvent::Kind::CancelTimer:
+    case CommandEvent::Kind::NexusOperation:  // keyed by the count-based seq id, like markers
     case CommandEvent::Kind::Marker:
       return produced.id == expected.id;
     case CommandEvent::Kind::CompleteWorkflow:

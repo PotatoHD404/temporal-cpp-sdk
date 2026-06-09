@@ -16,6 +16,7 @@
 #include <temporal/log/logger.h>
 
 #include "internal/activity_task_handler.h"
+#include "internal/nexus_task_handler.h"
 #include "internal/workflow_task_handler.h"
 
 namespace temporal::internal {
@@ -270,6 +271,8 @@ class WorkerImpl {
 
   void RegisterWorkflow(std::string name, worker::WorkflowFn fn);
   void RegisterActivity(std::string name, worker::ActivityFn fn);
+  void RegisterNexusOperation(std::string service, std::string operation,
+                              worker::NexusOperationFn fn);
 
   void Start();
   void Run();
@@ -289,6 +292,7 @@ class WorkerImpl {
   // minimum are "scalable" and gated by the autoscaler.
   void WorkflowPollLoop(bool sticky, int index);
   void ActivityPollLoop(bool session, int index);
+  void NexusPollLoop();       // polls + dispatches Nexus tasks (always hot, single poller)
   void DeadlockWatchLoop();  // reports workflow tasks that overrun the deadline
 
   // Emits the sticky-cache metrics after a workflow task is handled. The handler
@@ -313,11 +317,13 @@ class WorkerImpl {
   WorkerOptions options_;
   WorkflowTaskHandler workflow_handler_;
   ActivityTaskHandler activity_handler_;
+  NexusTaskHandler nexus_handler_;
   // Bound concurrent executions per task kind (constructed from options_, which
   // is declared above so it is initialized first).
   ConcurrencyGate workflow_gate_;
   ConcurrencyGate activity_gate_;
   ConcurrencyGate session_gate_;
+  ConcurrencyGate nexus_gate_;
   RateLimiter activity_rate_limiter_;  // paces activity starts (per second)
   DeadlockWatch deadlock_watch_;       // detects overrunning workflow tasks
   std::atomic<bool> stop_{false};

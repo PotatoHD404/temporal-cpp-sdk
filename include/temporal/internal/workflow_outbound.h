@@ -43,7 +43,7 @@ struct FutureState {
   std::string failure_message;
   // What operation backs this future, so it can be cancelled by emitting the
   // right command. Set by the scheduling call; only timers are cancellable today.
-  enum class Op : unsigned char { None, Timer, Activity, ChildWorkflow };
+  enum class Op : unsigned char { None, Timer, Activity, ChildWorkflow, NexusOperation };
   Op op = Op::None;
   std::string op_id;
 };
@@ -80,6 +80,15 @@ class WorkflowOutbound {
   virtual std::shared_ptr<FutureState> StartChildWorkflow(std::string_view workflow_type,
                                                           const Payloads& input,
                                                           const ChildWorkflowOptions& options) = 0;
+
+  // Schedule a Nexus operation against an endpoint's service/operation. Unlike
+  // activities, the input and result are each a SINGLE Payload (not Payloads).
+  // Returns a FutureState resolved by the matching NexusOperationCompleted /
+  // Failed / TimedOut / Canceled event (an async NexusOperationStarted does not
+  // resolve it). Matched to its NexusOperationScheduled event in call order.
+  virtual std::shared_ptr<FutureState> ScheduleNexusOperation(
+      std::string_view endpoint, std::string_view service, std::string_view operation,
+      const Payload& input, std::chrono::nanoseconds schedule_to_close) = 0;
 
   // Suspend the workflow until `state` is ready (cooperatively yields the
   // dispatcher coroutine; returns once ready, or unwinds on teardown).

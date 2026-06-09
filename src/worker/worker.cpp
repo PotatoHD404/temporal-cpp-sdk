@@ -29,6 +29,11 @@ void Worker::RegisterActivityFn(std::string name, ActivityFn fn) {
   impl_->RegisterActivity(std::move(name), std::move(fn));
 }
 
+void Worker::RegisterNexusOperationFn(std::string service, std::string operation,
+                                      NexusOperationFn fn) {
+  impl_->RegisterNexusOperation(std::move(service), std::move(operation), std::move(fn));
+}
+
 void Worker::Start() { impl_->Start(); }
 
 void Worker::Run() { impl_->Run(); }

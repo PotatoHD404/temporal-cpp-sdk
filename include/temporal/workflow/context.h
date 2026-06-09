@@ -77,6 +77,22 @@ class Context {
     return Future<R>(env_->StartChildWorkflow(workflow_type, input, options), converter_, env_);
   }
 
+  // Call a Nexus operation on `endpoint`'s `service`/`operation`; returns a Future
+  // for its typed result. Unlike an activity, a Nexus operation's input and result
+  // are each a SINGLE value (one Payload), so `input` is a single argument encoded
+  // to one Payload and `R` is decoded from one Payload. `schedule_to_close` bounds
+  // the whole call (0 = the server default). Mirrors the Go SDK's
+  // `workflow.ExecuteNexusOperation`.
+  template <class R, class Arg>
+  Future<R> ExecuteNexusOperation(const std::string& endpoint, const std::string& service,
+                                  const std::string& operation, const Arg& input,
+                                  std::chrono::nanoseconds schedule_to_close = {}) {
+    Payload encoded = converter_->ToPayload(input);
+    return Future<R>(
+        env_->ScheduleNexusOperation(endpoint, service, operation, encoded, schedule_to_close),
+        converter_, env_);
+  }
+
   // Create a host-pinned worker session. Runs a built-in creation activity on the
   // base task queue; the session-enabled worker that handles it returns its
   // host-unique session queue and reserves a session slot (bounded by the

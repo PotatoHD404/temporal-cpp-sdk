@@ -51,6 +51,16 @@ class FakeEnv : public internal::WorkflowOutbound {
     return st;
   }
 
+  std::shared_ptr<internal::FutureState> ScheduleNexusOperation(std::string_view, std::string_view,
+                                                               std::string_view, const Payload&,
+                                                               std::chrono::nanoseconds) override {
+    ++nexus_ops;
+    auto st = std::make_shared<internal::FutureState>();
+    st->ready = ready;
+    st->result = result;
+    return st;
+  }
+
   void Block(const std::shared_ptr<internal::FutureState>& st) override {
     if (!st->ready) {
       throw FakeSuspend{};
@@ -171,6 +181,7 @@ class FakeEnv : public internal::WorkflowOutbound {
   int scheduled = 0;
   int timers = 0;
   int children = 0;
+  int nexus_ops = 0;
   bool ready = false;
   Payloads result;
   workflow::WorkflowInfo info;

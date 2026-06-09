@@ -45,9 +45,11 @@ WorkerImpl::WorkerImpl(std::shared_ptr<GrpcClient> grpc, std::shared_ptr<DataCon
       workflow_handler_(grpc_.get(), converter_, logger_, task_queue_, sticky_queue_,
                         options.panic_policy, options.max_cached_workflows),
       activity_handler_(grpc_.get(), converter_, logger_, task_queue_),
+      nexus_handler_(grpc_.get(), converter_, logger_, task_queue_),
       workflow_gate_(options.max_concurrent_workflow_task_executions),
       activity_gate_(options.max_concurrent_activity_executions),
       session_gate_(options.max_concurrent_sessions),
+      nexus_gate_(options.max_concurrent_activity_executions),
       activity_rate_limiter_(options.max_activities_per_second) {
   // Let workflows run registered activities inline as local activities (the
   // workflow handler resolves activity functions from the activity registry).
@@ -116,6 +118,11 @@ void WorkerImpl::RegisterActivity(std::string name, worker::ActivityFn fn) {
   activity_handler_.Register(std::move(name), std::move(fn));
 }
 
+void WorkerImpl::RegisterNexusOperation(std::string service, std::string operation,
+                                        worker::NexusOperationFn fn) {
+  nexus_handler_.Register(std::move(service), std::move(operation), std::move(fn));
+}
+
 void WorkerImpl::Start() {
   bool expected = false;
   if (!started_.compare_exchange_strong(expected, true)) {
@@ -155,6 +162,10 @@ void WorkerImpl::Start() {
       threads_.emplace_back([this] { ActivityPollLoop(/*session=*/true, 0); });
     }
   }
+  if (nexus_handler_.has_operations()) {
+    // Single always-hot Nexus poller (Nexus tasks are infrequent vs. activities).
+    threads_.emplace_back([this] { NexusPollLoop(); });
+  }
   if (options_.deadlock_detection_timeout.count() > 0 && workflow_handler_.has_workflows()) {
     threads_.emplace_back([this] { DeadlockWatchLoop(); });
   }
@@ -181,6 +192,7 @@ void WorkerImpl::Stop() {
   workflow_gate_.ReleaseAll();
   activity_gate_.ReleaseAll();
   session_gate_.ReleaseAll();
+  nexus_gate_.ReleaseAll();
   // Wake any scalable poller parked in PollerScaler::Acquire() so it sees stop_.
   wf_scaler_.Wake();
   act_scaler_.Wake();
@@ -193,7 +205,8 @@ void WorkerImpl::Stop() {
     const bool wf_drained = workflow_gate_.Drain(deadline);
     const bool act_drained = activity_gate_.Drain(deadline);
     const bool sess_drained = session_gate_.Drain(deadline);
-    if (!wf_drained || !act_drained || !sess_drained) {
+    const bool nexus_drained = nexus_gate_.Drain(deadline);
+    if (!wf_drained || !act_drained || !sess_drained || !nexus_drained) {
       logger_->Warn("graceful shutdown timed out with tasks still in flight",
                     {log::F("task_queue", task_queue_)});
     }
@@ -474,6 +487,67 @@ void WorkerImpl::ActivityPollLoop(bool session, int index) {
         metrics->Counter("temporal_activity_task_failed", 1, act_tags);
       }
       logger_->Error("activity poll loop error", {log::F("error", e.what())});
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+  }
+}
+
+void WorkerImpl::NexusPollLoop() {
+  auto* metrics = options_.metrics_handler.get();
+  const MetricsHandler::Tags nexus_tags{{"task_queue", task_queue_}};
+  if (metrics) {
+    metrics->Counter("temporal_poller_start", 1,
+                     MetricsHandler::Tags{{"task_queue", task_queue_}, {"poller_type", "nexus"}});
+  }
+  while (!stop_.load()) {
+    try {
+      wsv::PollNexusTaskQueueRequest req;
+      req.set_namespace_(grpc_->ns());
+      req.mutable_task_queue()->set_name(task_queue_);
+      req.mutable_task_queue()->set_kind(enums::TASK_QUEUE_KIND_NORMAL);
+      req.set_identity(grpc_->identity());
+      const auto resp = grpc_->PollNexusTaskQueue(req);
+      const auto recv = std::chrono::steady_clock::now();
+      // An empty token is a poll timeout (no task); a non-empty one is a hit.
+      const bool got_task = !resp.task_token().empty();
+      if (stop_.load()) {
+        break;
+      }
+      if (!got_task) {
+        if (metrics) {
+          metrics->Counter("temporal_nexus_poll_timeout", 1, {});
+        }
+        continue;
+      }
+      if (metrics) {
+        metrics->Counter("temporal_nexus_poll_success", 1, {});
+      }
+      if (draining_.load()) {
+        continue;
+      }
+      // Bound concurrent executions. A released gate (Stop) returns false; bail.
+      GateGuard permit(nexus_gate_, nexus_gate_.Acquire());
+      if (!permit.held()) {
+        break;
+      }
+      const auto start = std::chrono::steady_clock::now();
+      if (metrics) {
+        metrics->Timer("temporal_nexus_task_schedule_to_start_latency", start - recv, nexus_tags);
+      }
+      nexus_handler_.Handle(resp);
+      if (metrics) {
+        const auto now = std::chrono::steady_clock::now();
+        metrics->Timer("temporal_nexus_task_execution_latency", now - start, {});
+        metrics->Counter("temporal_nexus_task_handled", 1, {});
+      }
+    } catch (const std::exception& e) {
+      if (stop_.load()) {
+        break;
+      }
+      if (metrics) {
+        metrics->Counter("temporal_nexus_task_failed", 1, nexus_tags);
+      }
+      logger_->Error("nexus poll loop error", {log::F("error", e.what())});
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
   }

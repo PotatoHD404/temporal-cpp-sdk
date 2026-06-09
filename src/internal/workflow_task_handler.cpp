@@ -74,6 +74,19 @@ struct ChildOutcome {
   std::string failure_message;
 };
 
+// Outcome of a Nexus operation, keyed by the count-based nexus-op id (mirrors
+// ActivityOutcome). NexusOperationStarted (async) does NOT resolve the future; an
+// operation resolves only on completed/failed/timed-out/canceled. The result is a
+// single Payload, stored (like an activity) as a one-element Payloads.
+struct NexusOpOutcome {
+  bool scheduled = false;
+  bool resolved = false;  // completed, failed, timed out, or canceled
+  bool failed = false;
+  Payloads result;  // success result, wrapped as one Payload
+  std::string failure_type;
+  std::string failure_message;
+};
+
 // Terminal workflow-outbound interceptor: the SDK performs the real outbound work
 // (scheduling) itself after the chain runs, so every method is a no-op here. The
 // chain's wrappers mutate the header before reaching this terminal.
@@ -134,6 +147,7 @@ struct Prescan {
   std::unordered_map<std::string, ActivityOutcome> activities;  // keyed by activity_id
   std::unordered_map<std::string, TimerOutcome> timers;         // keyed by timer_id
   std::unordered_map<std::string, ChildOutcome> children;       // keyed by child workflow_id
+  std::unordered_map<std::string, NexusOpOutcome> nexus_ops;    // keyed by nexus-op id
   std::unordered_map<std::string, std::vector<Payloads>> signals;  // keyed by signal name
   bool cancel_requested = false;
   int ext_signals_initiated = 0;  // count of SignalExternalWorkflow commands in history
@@ -142,6 +156,12 @@ struct Prescan {
   // activity_id of their schedule, and remember how far history has been consumed.
   std::unordered_map<std::int64_t, std::string> sched_event_to_activity;
   std::unordered_map<std::string, std::int64_t> activity_to_sched_event;  // for RequestCancelActivity
+  // Nexus operations correlate completion events to their schedule by the
+  // scheduled event id, exactly like activities. The nexus-op id is the count of
+  // NexusOperationScheduled events seen so far (matching the runner's call-ordered
+  // seq), so a completion event maps scheduled_event_id -> that id.
+  std::unordered_map<std::int64_t, std::string> sched_event_to_nexus;
+  int nexus_ops_scheduled = 0;  // count of NexusOperationScheduled events, for id assignment
   std::int64_t last_event_id = 0;
   // Ordered command-generating events, for non-determinism detection on replay.
   std::vector<CommandEvent> commands;
@@ -297,6 +317,62 @@ Prescan ScanHistory(const hist::History& history) {
         o.failed = true;
         o.failure_message = "child workflow cancelled";
         o.failure_type = "CanceledError";
+        break;
+      }
+      case enums::EVENT_TYPE_NEXUS_OPERATION_SCHEDULED: {
+        // The scheduled event carries no nexus-op id; the id is the call-ordered
+        // index (matching the runner's nexus_seq_), and the scheduled event id maps
+        // to it so completion events can correlate back (exactly like activities).
+        const std::string id = std::to_string(ps.nexus_ops_scheduled++);
+        ps.nexus_ops[id].scheduled = true;
+        ps.sched_event_to_nexus[ev.event_id()] = id;
+        ps.commands.push_back({CommandEvent::Kind::NexusOperation, id, ""});
+        break;
+      }
+      case enums::EVENT_TYPE_NEXUS_OPERATION_COMPLETED: {
+        const auto& a = ev.nexus_operation_completed_event_attributes();
+        const auto it = ps.sched_event_to_nexus.find(a.scheduled_event_id());
+        if (it != ps.sched_event_to_nexus.end()) {
+          auto& o = ps.nexus_ops[it->second];
+          o.resolved = true;
+          o.result = Payloads{FromProtoPayload(a.result())};  // single Payload -> one-element
+        }
+        break;
+      }
+      case enums::EVENT_TYPE_NEXUS_OPERATION_FAILED: {
+        const auto& a = ev.nexus_operation_failed_event_attributes();
+        const auto it = ps.sched_event_to_nexus.find(a.scheduled_event_id());
+        if (it != ps.sched_event_to_nexus.end()) {
+          auto& o = ps.nexus_ops[it->second];
+          o.resolved = true;
+          o.failed = true;
+          o.failure_message = a.failure().message();
+          o.failure_type = a.failure().application_failure_info().type();
+        }
+        break;
+      }
+      case enums::EVENT_TYPE_NEXUS_OPERATION_TIMED_OUT: {
+        const auto& a = ev.nexus_operation_timed_out_event_attributes();
+        const auto it = ps.sched_event_to_nexus.find(a.scheduled_event_id());
+        if (it != ps.sched_event_to_nexus.end()) {
+          auto& o = ps.nexus_ops[it->second];
+          o.resolved = true;
+          o.failed = true;
+          o.failure_message = "nexus operation timed out";
+          o.failure_type = "TimeoutError";
+        }
+        break;
+      }
+      case enums::EVENT_TYPE_NEXUS_OPERATION_CANCELED: {
+        const auto& a = ev.nexus_operation_canceled_event_attributes();
+        const auto it = ps.sched_event_to_nexus.find(a.scheduled_event_id());
+        if (it != ps.sched_event_to_nexus.end()) {
+          auto& o = ps.nexus_ops[it->second];
+          o.resolved = true;
+          o.failed = true;
+          o.failure_message = "nexus operation cancelled";
+          o.failure_type = "CanceledError";
+        }
         break;
       }
       case enums::EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED: {
@@ -647,6 +723,34 @@ class WorkflowRunner final : public WorkflowOutbound {
     return state;
   }
 
+  std::shared_ptr<FutureState> ScheduleNexusOperation(
+      std::string_view endpoint, std::string_view service, std::string_view operation,
+      const Payload& input, std::chrono::nanoseconds schedule_to_close) override {
+    // Count-keyed id (call order), so each call matches the next
+    // NexusOperationScheduled event in history — exactly like activities.
+    const std::string id = std::to_string(nexus_seq_++);
+    produced_commands_.push_back({CommandEvent::Kind::NexusOperation, id, ""});
+    auto state = std::make_shared<FutureState>();
+    state->op = FutureState::Op::NexusOperation;
+    state->op_id = id;
+    const auto it = scan_.nexus_ops.find(id);
+    if (it != scan_.nexus_ops.end() && it->second.scheduled) {
+      const NexusOpOutcome& o = it->second;
+      if (o.resolved) {
+        state->ready = true;
+        state->failed = o.failed;
+        state->result = o.result;
+        state->failure_type = o.failure_type;
+        state->failure_message = o.failure_message;
+      }
+      // scheduled but not yet resolved -> stays pending
+    } else {
+      EmitNexusOperation(endpoint, service, operation, input, schedule_to_close);
+    }
+    nexus_futures_[id] = state;  // so incremental completion events can resolve it
+    return state;
+  }
+
   std::optional<Payload> ReplaySideEffect() override {
     produced_commands_.push_back({CommandEvent::Kind::Marker, "SideEffect", ""});
     const std::size_t ordinal = side_effect_seq_++;
@@ -949,6 +1053,26 @@ class WorkflowRunner final : public WorkflowOutbound {
     st.failure_message = std::move(failure_message);
   }
 
+  // Resolve the live future for the Nexus operation whose schedule had this event
+  // id (mirrors ResolveActivity).
+  void ResolveNexusOperation(std::int64_t scheduled_event_id, bool failed, Payloads result,
+                             std::string failure_type, std::string failure_message) {
+    const auto m = scan_.sched_event_to_nexus.find(scheduled_event_id);
+    if (m == scan_.sched_event_to_nexus.end()) {
+      return;
+    }
+    const auto it = nexus_futures_.find(m->second);
+    if (it == nexus_futures_.end()) {
+      return;
+    }
+    auto& st = *it->second;
+    st.ready = true;
+    st.failed = failed;
+    st.result = std::move(result);
+    st.failure_type = std::move(failure_type);
+    st.failure_message = std::move(failure_message);
+  }
+
   // Apply history events newer than last_event_id to live futures / signal state.
   void ApplyEvents(const hist::History& history) {
     for (const auto& ev : history.events()) {
@@ -960,6 +1084,39 @@ class WorkflowRunner final : public WorkflowOutbound {
           const auto& a = ev.activity_task_scheduled_event_attributes();
           scan_.sched_event_to_activity[ev.event_id()] = a.activity_id();
           scan_.activity_to_sched_event[a.activity_id()] = ev.event_id();
+          break;
+        }
+        case enums::EVENT_TYPE_NEXUS_OPERATION_SCHEDULED: {
+          // The id is the call-ordered index; continue the count persisted in scan_
+          // so this event maps to the same id ScheduleNexusOperation assigned.
+          const std::string id = std::to_string(scan_.nexus_ops_scheduled++);
+          scan_.nexus_ops[id].scheduled = true;
+          scan_.sched_event_to_nexus[ev.event_id()] = id;
+          break;
+        }
+        case enums::EVENT_TYPE_NEXUS_OPERATION_COMPLETED: {
+          const auto& a = ev.nexus_operation_completed_event_attributes();
+          ResolveNexusOperation(a.scheduled_event_id(), false,
+                                Payloads{FromProtoPayload(a.result())}, "", "");
+          break;
+        }
+        case enums::EVENT_TYPE_NEXUS_OPERATION_FAILED: {
+          const auto& a = ev.nexus_operation_failed_event_attributes();
+          ResolveNexusOperation(a.scheduled_event_id(), true, {},
+                                a.failure().application_failure_info().type(),
+                                a.failure().message());
+          break;
+        }
+        case enums::EVENT_TYPE_NEXUS_OPERATION_TIMED_OUT: {
+          const auto& a = ev.nexus_operation_timed_out_event_attributes();
+          ResolveNexusOperation(a.scheduled_event_id(), true, {}, "TimeoutError",
+                                "nexus operation timed out");
+          break;
+        }
+        case enums::EVENT_TYPE_NEXUS_OPERATION_CANCELED: {
+          const auto& a = ev.nexus_operation_canceled_event_attributes();
+          ResolveNexusOperation(a.scheduled_event_id(), true, {}, "CanceledError",
+                                "nexus operation cancelled");
           break;
         }
         case enums::EVENT_TYPE_ACTIVITY_TASK_COMPLETED: {
@@ -1142,6 +1299,22 @@ class WorkflowRunner final : public WorkflowOutbound {
     commands_.push_back(std::move(c));
   }
 
+  void EmitNexusOperation(std::string_view endpoint, std::string_view service,
+                          std::string_view operation, const Payload& input,
+                          std::chrono::nanoseconds schedule_to_close) {
+    cmd::Command c;
+    c.set_command_type(enums::COMMAND_TYPE_SCHEDULE_NEXUS_OPERATION);
+    auto* attr = c.mutable_schedule_nexus_operation_command_attributes();
+    attr->set_endpoint(std::string(endpoint));
+    attr->set_service(std::string(service));
+    attr->set_operation(std::string(operation));
+    *attr->mutable_input() = ToProtoPayload(input);  // a single Payload, not Payloads
+    if (schedule_to_close.count() > 0) {
+      *attr->mutable_schedule_to_close_timeout() = ToProtoDuration(schedule_to_close);
+    }
+    commands_.push_back(std::move(c));
+  }
+
   void EmitRequestCancelExternalWorkflow(const std::string& workflow_id, bool child_only) {
     cmd::Command c;
     c.set_command_type(enums::COMMAND_TYPE_REQUEST_CANCEL_EXTERNAL_WORKFLOW_EXECUTION);
@@ -1202,6 +1375,7 @@ class WorkflowRunner final : public WorkflowOutbound {
   std::unordered_map<std::string, std::shared_ptr<FutureState>> activity_futures_;  // by activity_id
   std::unordered_map<std::string, std::shared_ptr<FutureState>> timer_futures_;     // by timer_id
   std::unordered_map<std::string, std::shared_ptr<FutureState>> child_futures_;     // by child wf id
+  std::unordered_map<std::string, std::shared_ptr<FutureState>> nexus_futures_;     // by nexus-op id
   std::vector<std::shared_ptr<FutureState>> cancel_futures_;  // resolved on workflow cancel
   std::vector<cmd::Command> commands_;
   std::vector<CommandEvent> produced_commands_;  // ordered, for non-determinism detection
@@ -1212,6 +1386,7 @@ class WorkflowRunner final : public WorkflowOutbound {
   int activity_seq_ = 0;
   int timer_seq_ = 0;
   int child_seq_ = 0;
+  int nexus_seq_ = 0;
   std::size_t side_effect_seq_ = 0;
   std::size_t ext_signal_seq_ = 0;
   std::size_t upsert_seq_ = 0;

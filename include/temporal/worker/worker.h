@@ -30,6 +30,11 @@ namespace worker {
 // Register* methods adapt ordinary user functions into these.
 using WorkflowFn = std::function<Payloads(workflow::Context&, const Payloads&)>;
 using ActivityFn = std::function<Payloads(activity::Context&, const Payloads&)>;
+// A Nexus operation handler, operating on payloads. Unlike activities, a Nexus
+// operation's input and result are each a SINGLE Payload (not Payloads). The
+// converter is supplied by the handler (Nexus has no Context to carry it) so the
+// typed adapter can decode the input and encode the result.
+using NexusOperationFn = std::function<Payload(const DataConverter&, const Payload&)>;
 
 // A worker polls a task queue and dispatches workflow/activity tasks to the
 // registered functions. Mirrors the Go SDK's `worker.Worker`.
@@ -71,6 +76,21 @@ class Worker {
     RegisterActivity(std::string(ref.name), Fn);
   }
 
+  // Register a Nexus operation handler `R Fn(Arg)` for (service, operation). Unlike
+  // an activity, a Nexus operation takes a SINGLE input value and returns a SINGLE
+  // value (each one Payload); the handler runs synchronously and completes the
+  // operation inline. Mirrors how RegisterActivity adapts a typed fn into a
+  // payload fn.
+  template <class Fn>
+  void RegisterNexusOperation(std::string service, std::string operation, Fn fn) {
+    using Sig = internal::fn_sig<std::decay_t<Fn>>;
+    static_assert(std::tuple_size_v<typename Sig::args> == 1,
+                  "Nexus operation handler must take exactly one input argument");
+    RegisterNexusOperationFn(
+        std::move(service), std::move(operation),
+        MakeNexusOperationFn<typename Sig::ret, typename Sig::args>(std::move(fn)));
+  }
+
   void Start();  // start pollers (non-blocking)
   void Run();    // start pollers and block until SIGINT or Stop()
   // Start pollers and block until the stop token is triggered, then drain — for
@@ -94,6 +114,24 @@ class Worker {
  private:
   void RegisterWorkflowFn(std::string name, WorkflowFn fn);
   void RegisterActivityFn(std::string name, ActivityFn fn);
+  void RegisterNexusOperationFn(std::string service, std::string operation, NexusOperationFn fn);
+
+  // Adapts a typed `R Fn(Arg)` Nexus handler into a NexusOperationFn: decode the
+  // single input Payload to Arg, run fn, encode the single R result to a Payload.
+  template <class Ret, class Args, class Fn>
+  static NexusOperationFn MakeNexusOperationFn(Fn fn) {
+    using Arg = std::tuple_element_t<0, Args>;
+    return [fn = std::move(fn)](const DataConverter& dc, const Payload& in) -> Payload {
+      Arg arg = dc.FromPayload<Arg>(in);
+      if constexpr (std::is_void_v<Ret>) {
+        fn(arg);
+        return Payload{};
+      } else {
+        Ret result = fn(arg);
+        return dc.ToPayload(result);
+      }
+    };
+  }
 
   template <class Ret, class AllArgs, class Fn>
   static WorkflowFn MakeWorkflowFn(Fn fn) {
