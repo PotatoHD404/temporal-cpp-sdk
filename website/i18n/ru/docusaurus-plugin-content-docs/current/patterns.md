@@ -16,8 +16,8 @@ description: Самодостаточные C++ рецепты для наибо
 
 :::note
 Здесь рассматриваются только возможности, отмеченные ✅ в [матрице паритета](parity.md).
-Паттерны, требующие нереализованных функций (локальные активности, автоматическое
-распространение отмены, MutableSideEffect и др.), намеренно опущены.
+Паттерны, требующие нереализованных функций (автоматическое распространение отмены
+на дочерние воркфлоу и т. п.), намеренно опущены.
 :::
 
 ---
@@ -475,4 +475,172 @@ std::string history_json = handle.FetchHistoryJson();
 провалит тест фикстуры, вместо того чтобы незаметно сломать выполняющееся в
 production воркфлоу.
 Полное руководство по тестированию воспроизведением — в разделе [Тестирование](testing.md).
+:::
+
+---
+
+## 10. Воркфлоу на корутинах (`co_await`)
+
+Пишите воркфлоу в стиле корутин C++20: возвращайте `workflow::workflow_task<R>`
+и применяйте `co_await` к future вместо вызова `.Get()`. Он понижается в **те же**
+команды, что и форма с `.Get()`, — идентичное поведение на проводе и реплей, —
+поэтому используйте тот стиль, который читается лучше.
+
+```cpp
+#include <temporal/temporal.h>
+
+temporal::workflow::workflow_task<std::string> CoAwaitWorkflow(
+    temporal::workflow::Context& ctx, std::string s) {
+  temporal::ActivityOptions o;
+  o.start_to_close_timeout = std::chrono::seconds(10);
+
+  // co_await заменяет .Get(); воркфлоу блокируется точно так же.
+  const std::string a = co_await ctx.ExecuteActivity<std::string>(o, "Echo", s);
+  const std::string b = co_await ctx.ExecuteActivity<std::string>(o, "Echo", a + "!");
+  co_return b;
+}
+```
+
+Регистрируйте и запускайте его как любой воркфлоу:
+
+```cpp
+worker.RegisterWorkflow("CoAwaitWorkflow", CoAwaitWorkflow);
+worker.RegisterActivity("Echo", EchoActivity);
+
+temporal::StartWorkflowOptions o;
+o.task_queue = "my-queue";
+auto handle = client.StartWorkflow(o, "CoAwaitWorkflow", std::string("hi"));
+std::string result = handle.Result<std::string>();  // "hi!"
+```
+
+---
+
+## 11. Вызов Nexus-операции
+
+Nexus вызывает операцию, обслуживаемую другим воркером (возможно, в другом
+namespace), без привязки к его типам воркфлоу. Зарегистрируйте обработчик `R Fn(Arg)`
+(один вход, один результат), зарегистрируйте endpoint, маршрутизирующий на его
+очередь задач, затем вызовите его из воркфлоу.
+
+```cpp
+// Обработчик на обслуживающем воркере: R Fn(Arg).
+std::string Greet(std::string name) { return "Hello, " + name; }
+
+// Вызывающий воркфлоу.
+std::string GreetViaNexus(temporal::workflow::Context& ctx, std::string who) {
+  return ctx.ExecuteNexusOperation<std::string, std::string>(
+      "greeting-endpoint",  // имя endpoint
+      "greeting",           // сервис
+      "say-hello",          // операция
+      who                   // единственное входное значение
+  ).Get();
+}
+```
+
+Свяжите всё: зарегистрируйте операцию на обслуживающем воркере, зарегистрируйте
+endpoint на клиенте (его цель — очередь задач, которую опрашивает этот воркер):
+
+```cpp
+serving_worker.RegisterNexusOperation("greeting", "say-hello", Greet);
+
+std::string endpoint_id =
+    client.CreateNexusEndpoint("greeting-endpoint", "nexus-handler-tq");
+
+worker.RegisterWorkflow("GreetViaNexus", GreetViaNexus);
+auto handle = client.StartWorkflow(o, "GreetViaNexus", std::string("World"));
+std::string result = handle.Result<std::string>();  // "Hello, World"
+```
+
+:::note
+Управление endpoint (и диспетчеризация Nexus) требует включённого Nexus на сервере,
+например `temporal server start-dev --dynamic-config-value system.enableNexus=true`;
+иначе `CreateNexusEndpoint` выбрасывает `RpcError`.
+:::
+
+---
+
+## 12. Запуск воркфлоу по cron / календарному расписанию
+
+`Client::CreateSchedule` запускает воркфлоу периодически. Используйте `cron_expressions`
+для календарных триггеров (стандартный cron из 5 полей, необязательное ведущее поле
+секунд и/или завершающий `CRON_TZ=<zone>`) вместо фиксированного `interval` — или
+вместе с ним.
+
+```cpp
+temporal::ScheduleOptions opts;
+opts.cron_expressions = {"0 9 * * MON-FRI"};  // по будням в 09:00
+opts.workflow_type = "ReportWorkflow";
+opts.task_queue = "reports";
+
+client.CreateSchedule("daily-report", opts);
+
+// Управление:
+bool exists = client.DescribeSchedule("daily-report");
+client.DeleteSchedule("daily-report");
+```
+
+---
+
+## 13. Дочерний воркфлоу, переживающий родителя (`ParentClosePolicy::Abandon`)
+
+По умолчанию выполняющийся дочерний воркфлоу завершается при закрытии родителя.
+Установите `parent_close_policy` в `Abandon`, чтобы он продолжал работать
+независимо (или `RequestCancel`, чтобы запросить его отмену).
+
+```cpp
+std::string StartAbandonedChild(temporal::workflow::Context& ctx,
+                                std::string child_id) {
+  temporal::ChildWorkflowOptions co;
+  co.id = child_id;  // задаём известный id, чтобы другие могли слать ему сигналы
+  co.parent_close_policy = temporal::ParentClosePolicy::Abandon;
+
+  // Fire-and-forget: запускаем дочерний воркфлоу и возвращаемся, не ожидая его.
+  ctx.ExecuteChildWorkflow<std::string>(co, "LongChild");
+  return "parent-done";  // дочерний воркфлоу продолжает работать после этого return
+}
+```
+
+Чтобы позже послать сигнал покинутому дочернему воркфлоу, адресуйте его по id через
+`ctx.SignalExternalWorkflow(child_id, "signalName", value)` — handle, возвращённый
+`ExecuteChildWorkflow`, является `Future` (у него есть `Get()`/`Cancel()`, метода
+сигнала нет).
+
+---
+
+## 14. Асинхронное (ручное) завершение активности
+
+Завершите активность вне основного потока: отложите её завершение, передайте токен
+задачи во внешнюю систему и завершите её позже через клиент. `Future` воркфлоу
+остаётся в ожидании, пока токен не будет разрешён.
+
+```cpp
+// Активность: откладывает завершение и передаёт свой токен; её возвращаемое значение игнорируется.
+std::string ApprovalActivity(temporal::activity::Context& ctx, std::string req) {
+  const std::string token = ctx.defer_completion();  // асинхронно; возвращает токен задачи
+  enqueue_for_external_review(req, token);            // например, webhook / шаг с человеком
+  return {};                                          // игнорируется — завершено в другом месте
+}
+
+std::string ApprovalWorkflow(temporal::workflow::Context& ctx, std::string req) {
+  temporal::ActivityOptions o;
+  o.start_to_close_timeout = std::chrono::seconds(300);  // с запасом: завершается вне основного потока
+  // Этот Get() блокируется, пока с токеном не будет вызван CompleteActivity/FailActivity.
+  return ctx.ExecuteActivity<std::string>(o, "ApprovalActivity", req).Get();
+}
+```
+
+Позже — из любого места, где есть `Client` и токен:
+
+```cpp
+// Успех — закодированный результат становится тем, что выдаёт Future воркфлоу.
+client.CompleteActivity(token, std::string("approved"));
+
+// …или ошибка (сообщение + необязательный тип ошибки):
+client.FailActivity(token, "rejected by reviewer", "ApprovalRejected");
+```
+
+:::note
+`defer_completion()` — это сокращение в один вызов для `SetWillCompleteAsync()` плюс
+чтение `GetInfo().task_token`. Задавайте `start_to_close_timeout` с запасом (или
+heartbeat), поскольку активность завершается внешней стороной, а не возвратом значения.
 :::

@@ -16,8 +16,8 @@ For fundamentals see [Activities & timers](workflows/overview.md),
 
 :::note
 Only capabilities marked ✅ in the [parity matrix](parity.md) are covered here.
-Patterns that require unimplemented features (local activities, automatic
-cancellation propagation, MutableSideEffect, etc.) are intentionally omitted.
+Patterns that require unimplemented features (automatic cancellation propagation
+to child workflows, etc.) are intentionally omitted.
 :::
 
 ---
@@ -473,4 +473,171 @@ Store a handful of exported histories as test fixtures and replay them in CI.
 Any reorder, addition, or removal of activities/timers fails the fixture test
 rather than silently breaking an in-flight execution in production.
 See [Testing](testing.md) for the full replay-testing guide.
+:::
+
+---
+
+## 10. Coroutine (`co_await`) workflow
+
+Author a workflow in C++20-coroutine style: return `workflow::workflow_task<R>`
+and `co_await` futures instead of calling `.Get()`. It lowers to the **same**
+commands as the `.Get()` form — identical wire behavior and replay — so use
+whichever reads better.
+
+```cpp
+#include <temporal/temporal.h>
+
+temporal::workflow::workflow_task<std::string> CoAwaitWorkflow(
+    temporal::workflow::Context& ctx, std::string s) {
+  temporal::ActivityOptions o;
+  o.start_to_close_timeout = std::chrono::seconds(10);
+
+  // co_await replaces .Get(); the workflow blocks the same way.
+  const std::string a = co_await ctx.ExecuteActivity<std::string>(o, "Echo", s);
+  const std::string b = co_await ctx.ExecuteActivity<std::string>(o, "Echo", a + "!");
+  co_return b;
+}
+```
+
+Register and start it like any workflow:
+
+```cpp
+worker.RegisterWorkflow("CoAwaitWorkflow", CoAwaitWorkflow);
+worker.RegisterActivity("Echo", EchoActivity);
+
+temporal::StartWorkflowOptions o;
+o.task_queue = "my-queue";
+auto handle = client.StartWorkflow(o, "CoAwaitWorkflow", std::string("hi"));
+std::string result = handle.Result<std::string>();  // "hi!"
+```
+
+---
+
+## 11. Call a Nexus operation
+
+Nexus calls an operation served by another worker (possibly another namespace)
+without coupling to its workflow types. Register the handler `R Fn(Arg)` (single
+input, single result), register the endpoint that routes to its task queue, then
+call it from a workflow.
+
+```cpp
+// Handler on the serving worker: R Fn(Arg).
+std::string Greet(std::string name) { return "Hello, " + name; }
+
+// Caller workflow.
+std::string GreetViaNexus(temporal::workflow::Context& ctx, std::string who) {
+  return ctx.ExecuteNexusOperation<std::string, std::string>(
+      "greeting-endpoint",  // endpoint name
+      "greeting",           // service
+      "say-hello",          // operation
+      who                   // single input value
+  ).Get();
+}
+```
+
+Wire it up: register the operation on the serving worker, register the endpoint on
+the client (its target is the task queue that worker polls):
+
+```cpp
+serving_worker.RegisterNexusOperation("greeting", "say-hello", Greet);
+
+std::string endpoint_id =
+    client.CreateNexusEndpoint("greeting-endpoint", "nexus-handler-tq");
+
+worker.RegisterWorkflow("GreetViaNexus", GreetViaNexus);
+auto handle = client.StartWorkflow(o, "GreetViaNexus", std::string("World"));
+std::string result = handle.Result<std::string>();  // "Hello, World"
+```
+
+:::note
+Endpoint management (and Nexus dispatch) requires Nexus enabled on the server,
+e.g. `temporal server start-dev --dynamic-config-value system.enableNexus=true`;
+otherwise `CreateNexusEndpoint` throws `RpcError`.
+:::
+
+---
+
+## 12. Schedule a workflow on a cron / calendar spec
+
+`Client::CreateSchedule` recurs a workflow. Use `cron_expressions` for calendar
+triggers (standard 5-field cron, optional leading seconds and/or trailing
+`CRON_TZ=<zone>`) instead of — or alongside — a fixed `interval`.
+
+```cpp
+temporal::ScheduleOptions opts;
+opts.cron_expressions = {"0 9 * * MON-FRI"};  // weekdays at 09:00
+opts.workflow_type = "ReportWorkflow";
+opts.task_queue = "reports";
+
+client.CreateSchedule("daily-report", opts);
+
+// Manage it:
+bool exists = client.DescribeSchedule("daily-report");
+client.DeleteSchedule("daily-report");
+```
+
+---
+
+## 13. Child workflow that outlives its parent (`ParentClosePolicy::Abandon`)
+
+By default a running child is terminated when its parent closes. Set
+`parent_close_policy` to `Abandon` to let it keep running independently (or
+`RequestCancel` to request its cancellation).
+
+```cpp
+std::string StartAbandonedChild(temporal::workflow::Context& ctx,
+                                std::string child_id) {
+  temporal::ChildWorkflowOptions co;
+  co.id = child_id;  // give it a known id so others can signal it
+  co.parent_close_policy = temporal::ParentClosePolicy::Abandon;
+
+  // Fire-and-forget: start the child and return without awaiting it.
+  ctx.ExecuteChildWorkflow<std::string>(co, "LongChild");
+  return "parent-done";  // the child keeps running after this returns
+}
+```
+
+To signal the abandoned child later, address it by id with
+`ctx.SignalExternalWorkflow(child_id, "signalName", value)` — the handle returned
+by `ExecuteChildWorkflow` is a `Future` (it has `Get()`/`Cancel()`, no signal
+method).
+
+---
+
+## 14. Async (manual) activity completion
+
+Finish an activity out of band: defer its completion, hand the task token to some
+external system, and complete it later through the client. The workflow's `Future`
+stays pending until the token is resolved.
+
+```cpp
+// Activity: defers completion and hands its token off; its return value is ignored.
+std::string ApprovalActivity(temporal::activity::Context& ctx, std::string req) {
+  const std::string token = ctx.defer_completion();  // async; returns the task token
+  enqueue_for_external_review(req, token);            // e.g. a webhook / human step
+  return {};                                          // ignored — completed elsewhere
+}
+
+std::string ApprovalWorkflow(temporal::workflow::Context& ctx, std::string req) {
+  temporal::ActivityOptions o;
+  o.start_to_close_timeout = std::chrono::seconds(300);  // generous: completed out of band
+  // This Get() blocks until CompleteActivity/FailActivity is called with the token.
+  return ctx.ExecuteActivity<std::string>(o, "ApprovalActivity", req).Get();
+}
+```
+
+Later, from anywhere holding a `Client` and the token:
+
+```cpp
+// Success — the encoded result is what the workflow's Future yields.
+client.CompleteActivity(token, std::string("approved"));
+
+// …or failure (message + optional failure type):
+client.FailActivity(token, "rejected by reviewer", "ApprovalRejected");
+```
+
+:::note
+`defer_completion()` is the one-call shorthand for `SetWillCompleteAsync()` plus
+reading `GetInfo().task_token`. Set a generous `start_to_close_timeout` (or
+heartbeat) since the activity is finished by an external party, not by returning.
 :::

@@ -88,9 +88,9 @@ std::string ProcessOrder(temporal::workflow::Context& ctx,
                          std::string order_id, double amount) {
   // Options apply to every ExecuteActivity call; you can reuse or customise per call.
   temporal::ActivityOptions opts;
-  opts.start_to_close_timeout = 30s;        // each activity has up to 30 s to finish
-  opts.retry_policy.maximum_attempts = 3;   // retry transient failures up to 3 times
-  opts.retry_policy_set = true;
+  opts.start_to_close_timeout = 30s;  // each activity has up to 30 s to finish
+  // retry_policy is optional: leave it unset for the server defaults, or set one.
+  opts.retry_policy = temporal::RetryPolicy{.maximum_attempts = 3};  // up to 3 attempts
 
   // Step 1 — validate.
   // Future<double>::Get() either returns the validated amount or throws ActivityError.
@@ -111,6 +111,13 @@ Activities scheduled **before** the first `.Get()` run in parallel. Here they're
 each step depends on the previous one. For fan-out patterns (e.g. charging multiple line items at
 once) schedule all futures first, then call `.Get()` on each — see
 [Activities & timers](./workflows/overview) for a parallel example.
+:::
+
+:::note
+Prefer C++20 coroutine syntax? A workflow may instead return `temporal::workflow::workflow_task<R>`
+and `co_await` a future / `co_return` its result — `co_await ctx.ExecuteActivity<R>(...)` is exactly
+equivalent to `.Get()` (same commands, same replay). The `.Get()` form is used throughout this
+tutorial; both authoring styles interoperate.
 :::
 
 ---
@@ -200,8 +207,7 @@ std::string ProcessOrderWithApproval(temporal::workflow::Context& ctx,
                                      std::string order_id, double amount) {
   temporal::ActivityOptions opts;
   opts.start_to_close_timeout = 30s;
-  opts.retry_policy.maximum_attempts = 3;
-  opts.retry_policy_set = true;
+  opts.retry_policy = temporal::RetryPolicy{.maximum_attempts = 3};
 
   // Step 1 — validate (same as before).
   const double validated =
@@ -227,8 +233,8 @@ std::string ProcessOrderWithApproval(temporal::workflow::Context& ctx,
 
 ### Sending the signal from the client
 
-The signal payload is encoded via the [data converter](./data-conversion) before being sent. Use
-`DataConverter::Default()` to get the same JSON converter the SDK uses by default:
+`WorkflowHandle::Signal` is variadic — pass the payload directly and the SDK encodes it through the
+[data converter](./data-conversion) for you (no need to build `Payloads` by hand):
 
 ```cpp
 // Register the new workflow type alongside the old one, or replace it:
@@ -243,12 +249,17 @@ auto handle = client.StartWorkflow(wf_opts, "ProcessOrderWithApproval",
 
 // The workflow is now parked, waiting for the "approve" signal.
 // In a real system a separate process (e.g. a review dashboard) sends this.
-const auto dc = temporal::DataConverter::Default();
-handle.Signal("approve", dc->ToPayloads(std::string("yes")));
+handle.Signal("approve", std::string("yes"));  // encoded for you
 
 const std::string receipt = handle.Result<std::string>();
 std::cout << "Receipt: " << receipt << "\n";
 ```
+
+:::tip
+For a name that can't drift, declare a typed `temporal::SignalRef<T>` once and use it on both ends —
+`ctx.GetSignalChannel(ref)` in the workflow and `handle.Signal(ref, value)` from the client. The
+payload type is then checked at compile time. See [Signals, queries & updates](./workflows/messaging).
+:::
 
 :::tip
 `Signal()` is fire-and-forget: it returns as soon as the RPC succeeds; the workflow may not have
@@ -260,8 +271,9 @@ register a query handler and poll — see [Signals, queries & updates](./workflo
 
 ## Part 5 — a timer for the approval deadline
 
-What if no one approves for 24 hours? You can race the signal against a timer using a `Selector`.
-`Selector` picks the first future (or channel) that becomes ready and fires its callback.
+What if no one approves for 24 hours? You race the signal against a timer using a `Selector`.
+`Selector` waits on multiple cases — futures (activities, timers, child workflows) **and**
+signal-channel receives — and runs the handler of whichever becomes ready first.
 
 ```cpp
 #include <temporal/workflow/selector.h>
@@ -270,13 +282,12 @@ std::string ProcessOrderWithDeadline(temporal::workflow::Context& ctx,
                                      std::string order_id, double amount) {
   temporal::ActivityOptions opts;
   opts.start_to_close_timeout = 30s;
-  opts.retry_policy.maximum_attempts = 3;
-  opts.retry_policy_set = true;
+  opts.retry_policy = temporal::RetryPolicy{.maximum_attempts = 3};
 
   const double validated =
       ctx.ExecuteActivity<double>(opts, "ValidateOrder", order_id, amount).Get();
 
-  // Race approval signal against a 24-hour deadline.
+  // Race the approval signal against a 24-hour deadline.
   auto approval_ch  = ctx.GetSignalChannel<std::string>("approve");
   auto deadline_fut = ctx.NewTimer(24h);  // durable: survives worker restarts
 
@@ -284,71 +295,26 @@ std::string ProcessOrderWithDeadline(temporal::workflow::Context& ctx,
   bool timed_out = false;
 
   temporal::workflow::Selector sel(ctx);
-  // AddFuture<T> callback receives the typed result when the future fires.
-  sel.AddFuture<void>(deadline_fut, [&]() { timed_out = true; });
-  // For a signal channel, use AddFuture on a Future built from the signal itself —
-  // or simply call Receive() if you don't need racing. Here we need the race,
-  // so we call Receive() inside a timer: if deadline fires first, Receive() never runs.
-  // The simpler pattern: just check timed_out after Select().
-  //
-  // Because selector channel cases are not yet supported (see parity matrix),
-  // we use a one-shot future approach: schedule the timer and check IsCancelled
-  // as an escape hatch, OR use the two-future pattern below with a helper workflow.
-  //
-  // Simplest correct pattern with current selectors:
-  sel.Select();  // blocks until the timer fires OR we get interrupted
+  // AddReceive's handler gets the consumed signal value when one is buffered.
+  sel.AddReceive<std::string>(approval_ch, [&](std::string v) { decision = std::move(v); });
+  // AddFuture on the void timer future fires when the deadline elapses.
+  sel.AddFuture(deadline_fut, [&]() { timed_out = true; });
+  sel.Select();  // parks until the signal arrives OR the timer fires
 
-  if (timed_out) {
-    return "expired";
+  if (timed_out || decision != "yes") {
+    return timed_out ? "expired" : "rejected";
   }
 
-  // If we're here the timer fired — in a real workflow you'd park on the signal
-  // separately, or use Sleep + ReceiveAsync in a loop:
-  std::string sig;
-  if (approval_ch.ReceiveAsync(sig)) {
-    if (sig != "yes") return "rejected";
-    return ctx.ExecuteActivity<std::string>(opts, "ChargeCard", order_id, validated).Get();
-  }
-  return "expired";
+  // Approved in time — charge.
+  return ctx.ExecuteActivity<std::string>(opts, "ChargeCard", order_id, validated).Get();
 }
 ```
 
-:::note
-The pattern above is a simplification. For a clean "race signal vs. timer" today, the most
-straightforward approach is `ctx.Sleep(deadline)` followed by `ReceiveAsync` in a loop — or use a
-regular `Receive()` and let the operator cancel the workflow to trigger the timeout path. Selector
-**channel** cases (which would let you `AddChannel` directly) are not yet implemented; see the
-[parity matrix](./parity) for the current status.
+:::tip
+Add a `sel.AddDefault([&]{ ... })` case to make `Select()` non-blocking — it runs the default
+immediately when no other case is ready, instead of parking. You can also race against cancellation
+with `sel.AddFuture(ctx.AwaitCancellation(), ...)`.
 :::
-
-The more idiomatic pattern that works today — `Sleep` + `ReceiveAsync`:
-
-```cpp
-std::string ProcessOrderWithDeadline(temporal::workflow::Context& ctx,
-                                     std::string order_id, double amount) {
-  temporal::ActivityOptions opts;
-  opts.start_to_close_timeout = 30s;
-
-  const double validated =
-      ctx.ExecuteActivity<double>(opts, "ValidateOrder", order_id, amount).Get();
-
-  // Poll the signal channel in small increments up to 24 hours.
-  // ctx.Sleep() is durable — the workflow survives restarts between sleeps.
-  auto approval_ch = ctx.GetSignalChannel<std::string>("approve");
-  constexpr auto kPollInterval = 5min;
-  constexpr int  kMaxPolls     = (24 * 60) / 5;  // 288 polls = 24 hours
-
-  for (int i = 0; i < kMaxPolls; ++i) {
-    std::string decision;
-    if (approval_ch.ReceiveAsync(decision)) {
-      if (decision != "yes") return "rejected";
-      return ctx.ExecuteActivity<std::string>(opts, "ChargeCard", order_id, validated).Get();
-    }
-    ctx.Sleep(kPollInterval);
-  }
-  return "expired";  // 24 hours passed with no signal
-}
-```
 
 ---
 

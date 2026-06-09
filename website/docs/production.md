@@ -47,6 +47,8 @@ temporal::worker::Worker worker(client, "my-task-queue", opts);
 | `activity_task_pollers` | `1` | Number of poller threads dedicated to the activity task queue. |
 | `panic_policy` | `BlockWorkflow` | How to react when replayed commands diverge from recorded history. See [Non-determinism safety](#non-determinism-safety). |
 | `max_cached_workflows` | `0` (unbounded) | Maximum number of workflow coroutines held resident in the sticky cache simultaneously. `0` means no limit. When the limit is reached, the least-recently-used workflow is evicted. See [Sticky cache](#sticky-cache). |
+| `deadlock_detection_timeout` | `0` (disabled) | Per-resume bound on workflow-task execution. A task that doesn't yield within this deadline is treated as a deadlock: reported and **aborted**. `0` disables the check. See [Deadlock detection](#deadlock-detection). |
+| `metrics_handler` | `nullptr` (disabled) | A `temporal::MetricsHandler` sink for SDK-emitted metrics (e.g. the deadlock counter). `nullptr` disables metric emission. |
 
 ### Sizing guidance
 
@@ -120,6 +122,45 @@ A healthy worker in steady state will have a high hit rate (> 95 %). A sustained
 indicates the cache is too small for the number of concurrently-open runs, the worker is restarting
 frequently, or the task queue is being served by a pool of workers with no affinity (each worker
 replaying tasks that another cached).
+
+---
+
+## Deadlock detection {#deadlock-detection}
+
+Workflow code must never block — no real I/O, no sleeping the thread, no non-yielding loops. A
+workflow task that does so would otherwise pin a poller forever and the worker would stop making
+progress. `deadlock_detection_timeout` is a watchdog against this:
+
+```cpp
+opts.deadlock_detection_timeout = std::chrono::seconds(2);  // 0 (default) disables it
+```
+
+Each time the worker resumes a workflow coroutine it bounds the resume by this deadline (it measures
+total per-resume task time, which includes any inline local activities). A task that does not yield
+within the bound is detected and then:
+
+1. **Reported** — the `temporal_workflow_task_deadlock` counter is incremented on your
+   `metrics_handler` (if one is set) and an `Error` is logged.
+2. **Aborted** — the workflow *task* is failed (so the server reschedules it), and the run is
+   dropped from the sticky cache.
+
+Crucially, the runaway coroutine cannot be safely interrupted, so it is **abandoned**: it keeps
+running on its own detached thread and is intentionally **leaked** (the runner is kept alive forever
+so that thread never touches freed memory). The worker thread is freed immediately and **keeps
+serving other workflows** — one stuck workflow does not take the worker down. This mirrors the Go
+SDK, where a deadlocked workflow goroutine is likewise leaked; deadlocks are bugs and are expected to
+be rare.
+
+A workflow that *deterministically* blocks is aborted on every retry and never completes, but the
+worker stays healthy. Fix the workflow code (replace the blocking call with an activity, a timer, or
+an `Await`) rather than raising the timeout. The `DeadlockAbortKeepsWorkerAlive` and
+`DeadlockDetectionReportsOverrunningTask` integration cases cover both halves of this behavior.
+
+:::note
+The leaked thread holds whatever resources the blocking call acquired until the process exits. This
+is an acceptable cost for keeping the worker alive on a rare bug, but it is another reason to treat a
+firing deadlock metric as a code defect to fix, not a knob to tune around.
+:::
 
 ---
 
@@ -299,7 +340,7 @@ degrade gracefully; they simply do not exist yet.
 |---|---|---|
 | TLS / mTLS | ❌ | All connections are insecure plaintext gRPC. Do not expose the Temporal frontend on an untrusted network without a sidecar/proxy. |
 | API-key authentication | ❌ | Workers and clients cannot authenticate to Temporal Cloud or a hardened self-hosted cluster. |
-| Metrics (Prometheus / OTel) | ❌ | No SDK-emitted metrics (task latency, slot utilisation, schedule-to-start, etc.). |
+| Metrics (Prometheus / OTel) | ⚠️ partial | A `WorkerOptions::metrics_handler` sink exists, but the SDK currently emits only a small set of counters (e.g. `temporal_workflow_task_deadlock`) — not the full Go/Java metric set (task latency, slot utilisation, schedule-to-start, etc.). |
 | Distributed tracing / OpenTelemetry | ❌ | No trace propagation through workflow/activity boundaries. |
 | Worker versioning / Build IDs | ❌ | You cannot deploy multiple worker versions to the same task queue with routing. |
 | Poller autoscaling / graceful drain | ❌ | No built-in long-poll drain on `Stop()`; no autoscaling. |
@@ -314,8 +355,10 @@ See the full [parity matrix](/parity) for everything that is and is not implemen
 **Insecure transport**: run `temporal-cpp-sdk` workers inside a mTLS-terminating service mesh (Istio,
 Linkerd) or behind an Envoy sidecar that terminates TLS before forwarding to the Temporal frontend.
 
-**No metrics**: export `cache_hits()` and `replays()` on a periodic timer to your metrics backend as
-a minimal proxy for worker health until SDK-level metrics land.
+**Limited metrics**: wire a `WorkerOptions::metrics_handler` to capture the counters the SDK does
+emit (e.g. `temporal_workflow_task_deadlock`), and export `cache_hits()` and `replays()` on a
+periodic timer to your metrics backend as a minimal proxy for worker health until the full SDK metric
+set lands.
 
 **No tracing**: instrument activity entry/exit manually using your preferred tracing library; pass
 trace context through workflow memo or signal payloads until header/context propagation is

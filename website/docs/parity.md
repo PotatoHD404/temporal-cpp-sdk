@@ -31,7 +31,7 @@ cache. This page is the honest accounting.
 | List / count / describe workflows | ✅ | `Describe`, `ListWorkflows`, `CountWorkflows` (visibility query) |
 | Reset workflow | ✅ | `Client::ResetWorkflow` (ResetWorkflowExecution); e2e-verified |
 | Batch operations | ✅ | `StartBatchTerminate`/`StartBatchCancel` + `Describe`/`List`; e2e-verified |
-| Schedules client | ✅ | create / describe / delete / update / list / trigger / pause / unpause (interval spec) |
+| Schedules client | ✅ | create / describe / delete / update / list / trigger / pause / unpause (interval **and** calendar/cron specs) |
 | Operator service | ✅ | search-attribute add/list/remove + cluster info/list + namespace delete ✅ e2e (delete via the not-found path); remote-cluster add/remove implemented but needs a federated cluster to exercise |
 
 ## Worker
@@ -61,7 +61,7 @@ cache. This page is the honest accounting.
 | Updates (`SetUpdateHandler`) | ✅ | accept + complete on the live path |
 | Update validators | ✅ | read-only validator; rejection is ephemeral (no history entry) |
 | Selectors | ✅ | future cases + signal-channel receive cases (`AddReceive`) |
-| Child workflows | ✅ | basic + cancellation; no parent-close-policy / signal-child |
+| Child workflows | ✅ | basic + cancellation + parent-close-policy (`Terminate`/`Abandon`/`RequestCancel`) + signal-to-child |
 | Continue-as-new | ✅ | |
 | Observe cancellation (`IsCancelled`) | ✅ | |
 | Cancellation scopes / propagation | ✅ | `AwaitCancellation` + timer / activity / child-workflow `Future::Cancel` |
@@ -79,7 +79,7 @@ cache. This page is the honest accounting.
 | Typed execution | ✅ | |
 | Server-driven retries (`RetryPolicy`) | ✅ | |
 | Application errors (retryable / not) | ✅ | |
-| Heartbeating | ✅ | `Context::IsCancelled` observes the server's cancel; throttling ❌ |
+| Heartbeating | ✅ | `Context::IsCancelled` observes the server's cancel; `RecordHeartbeat` is auto-throttled (≈80% of the heartbeat timeout) so frequent calls don't flood the server |
 | Async (manual) completion | ✅ | `Context::SetWillCompleteAsync` + `Client::CompleteActivity`/`FailActivity` (by task token) |
 | Activity-side cancellation | ✅ | workflow `Future::Cancel` → `RequestCancelActivityTask`; activity sees it via `Context::IsCancelled` |
 
@@ -91,7 +91,7 @@ cache. This page is the honest accounting.
 | Custom converters | ✅ | |
 | Proto / ProtoJSON converters | ✅ | binary protobuf + proto-json (`WithProtoJson`), both directions; unit-tested |
 | Payload codecs (encryption/compression) | ✅ | `PayloadCodec` interface + chain + bundled base64 and **gzip (deflate) compression** codecs; encryption is bring-your-own (as in the Go SDK) |
-| Custom failure converter | ✅ | `FailureConverter` interface + default + `DataConverter` hook; wired into **activity- and workflow-failure encoding** (e2e-verified); client-side decode still surfaces the default `WorkflowFailedError` |
+| Custom failure converter | ✅ | `FailureConverter` interface + default + `DataConverter` hook; wired into **activity- and workflow-failure encoding** (e2e-verified); client-side decode surfaces the failure type via `WorkflowFailedError::type()` |
 | Large-payload / external storage | ✅ | `PayloadStorage` interface + in-memory and persistent `FilePayloadStorage` (on-disk) impls, unit-tested (round-trip + dangling-ref); S3/GCS plug in via the same interface (bring-your-own) |
 
 ## Determinism & safety
@@ -115,8 +115,8 @@ cache. This page is the honest accounting.
 | Tracing / OpenTelemetry | ✅ | `TracingInterceptor` creates spans around workflow + activity and propagates one trace workflow→activity via headers (e2e-verified); `Tracer`/`Span` is a bring-your-own adapter — no OTel exporter bundled |
 | Structured logging | ✅ | pluggable `log::Logger` |
 | Test framework (time-skip, replayer) | ✅ | replayer ✅ (`Worker::ReplayWorkflowHistory`); time-skip ✅ via `testing::TestWorkflowEnvironment` against the Temporal time-skipping test server (`temporal-test-server`) — a workflow that sleeps 24h completes in milliseconds and the server clock advances ~24h; e2e-verified (gated on the test-server binary, which is separate from the dev server, exactly like the other integration tests need a running server) |
-| Schedules | ✅ | full client lifecycle (create/describe/delete/update/list/trigger/pause); calendar/cron specs ❌ |
-| Nexus operations | 🟡 | endpoint management (create/get/list via OperatorService) ✅ e2e; Nexus operation calls + worker Nexus handler ❌ |
+| Schedules | ✅ | full client lifecycle (create/describe/delete/update/list/trigger/pause) + interval **and** calendar/cron specs |
+| Nexus operations | ✅ | endpoint management (create/get/list via OperatorService) ✅ e2e; Nexus operation calls (`ExecuteNexusOperation`) + worker Nexus handler (`RegisterNexusOperation`) ✅ e2e |
 
 ## Roadmap {#roadmap}
 

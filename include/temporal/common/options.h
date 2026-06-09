@@ -162,11 +162,13 @@ struct WorkerOptions {
   int max_concurrent_activity_executions = 0;
   int max_concurrent_workflow_task_executions = 0;
 
-  // If > 0, a watchdog reports (metric + log) any workflow task whose handling
-  // exceeds this deadline — a likely deadlock (blocking call / infinite loop in
-  // workflow code). Detection only: the coroutine runs on the poller thread and
-  // can't be safely interrupted, so the task is flagged, not aborted. Note this
-  // measures total task time, which includes inline local activities.
+  // If > 0, a workflow task whose resume exceeds this deadline is treated as a
+  // deadlock (blocking call / infinite loop in workflow code): it is reported
+  // (metric `temporal_workflow_task_deadlock` + error log) AND aborted — the task
+  // is failed so the server reschedules it, while the worker keeps serving other
+  // workflows. The runaway coroutine runs on its own thread and is abandoned +
+  // intentionally leaked (as the Go SDK leaks a stuck workflow goroutine), since
+  // it can't be safely interrupted. The bound is per resume.
   std::chrono::milliseconds deadlock_detection_timeout{0};
 
   // Caps the rate at which this worker starts activity executions, in activities

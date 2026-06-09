@@ -66,7 +66,60 @@ class PayloadConverter {
 };
 ```
 
-:::note
-**Protobuf / ProtoJSON** payload converters and **payload codecs** (for end-to-end encryption or
-compression) are not yet implemented. See the [parity matrix](/parity).
-:::
+## Protobuf messages
+
+Protobuf-generated messages are detected automatically and encoded as binary
+protobuf (`binary/protobuf`) instead of going through the JSON stack — no extra
+wiring. To emit the proto-JSON mapping (`json/protobuf`) instead, use a converter
+built with `DataConverter::WithProtoJson()` (or call `SetProtoJson(true)`).
+Decoding always accepts **both** encodings regardless of the toggle, so a peer
+can read either form.
+
+## Payload codecs
+
+A `PayloadCodec` transforms an already-converted payload on its way to/from the
+server — compression or encryption "at rest" — applied after the converter on
+encode and before it on decode. Both peers must share the same codec chain. Wrap
+the default stack in a chain with `DataConverter::WithCodecs`:
+
+```cpp
+auto dc = temporal::DataConverter::WithCodecs(
+    {std::make_shared<temporal::GzipPayloadCodec>()});  // e.g. gzip-compress every payload
+opts.data_converter = dc;
+```
+
+The SDK bundles `GzipPayloadCodec` (zlib), `Base64PayloadCodec` (reference
+stand-in), and `PayloadStorage` implementations (`InMemoryPayloadStorage`,
+`FilePayloadStorage`) for offloading oversized bodies to an external store.
+
+## Failure converters
+
+A `FailureConverter` translates C++ error types to/from Temporal's wire failure
+proto (`temporal.api.failure.v1.Failure`), so you can control how application
+failures are encoded (carry extra detail, redact, etc.). Install one on a
+`DataConverter`:
+
+```cpp
+auto dc = temporal::DataConverter::Default();
+dc->WithFailureConverter(std::make_shared<MyFailureConverter>());
+opts.data_converter = dc;
+```
+
+A `FailureConverter` implements two methods:
+
+```cpp
+class FailureConverter {
+ public:
+  virtual void ErrorToFailure(const std::exception& error,
+                              temporal::api::failure::v1::Failure& out) const = 0;
+  virtual std::exception_ptr FailureToError(
+      const temporal::api::failure::v1::Failure& failure) const = 0;
+};
+```
+
+The default converter (`DefaultFailureConverter`) round-trips `ApplicationError`
+losslessly (type, non-retryable flag, message, stack trace). The configured
+converter is used to encode **both** activity failures and a workflow's own
+failure. On the client side, a failed workflow surfaces as `WorkflowFailedError`,
+whose `type()` carries the decoded application-failure type — see
+[Errors, retries & timeouts](/error-handling#workflow-failure).

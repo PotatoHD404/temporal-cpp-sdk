@@ -21,7 +21,13 @@ std::runtime_error
         ├── temporal::WorkflowFailedError  — received by a client when a workflow ends badly
         ├── temporal::DataConverterError   — payload encode/decode failure
         └── temporal::RpcError             — transport / gRPC failure to the Temporal service
+              └── temporal::NotFoundError  — server returned NOT_FOUND (unknown workflow / schedule / namespace)
 ```
+
+`NotFoundError` derives from `RpcError`, so a `catch (const temporal::RpcError&)`
+still catches it (and `not_found()` returns `true`); new code can
+`catch (const temporal::NotFoundError&)` directly to treat "absent" distinctly
+from a transport failure.
 
 ## Throwing failures from an activity
 
@@ -62,8 +68,7 @@ from the original `ApplicationError`.
 ```cpp
 temporal::ActivityOptions opts;
 opts.start_to_close_timeout = std::chrono::seconds(30);
-opts.retry_policy.maximum_attempts = 3;
-opts.retry_policy_set = true;
+opts.retry_policy = temporal::RetryPolicy{.maximum_attempts = 3};
 
 try {
   std::string receipt =
@@ -89,9 +94,11 @@ receive.
 
 ## Configuring retries with `RetryPolicy`
 
-`RetryPolicy` is a field on `ActivityOptions`. To apply a non-default policy you
-**must** also set `retry_policy_set = true`; without it the field is ignored and
-the server applies its built-in defaults.
+`ActivityOptions::retry_policy` is a `std::optional<RetryPolicy>`. Leave it unset
+(the default) and the server applies its built-in defaults; assign a value to
+override them — `opts.retry_policy = temporal::RetryPolicy{...};`. The same
+optional field appears on `ChildWorkflowOptions`, `LocalActivityOptions`, and
+`StartWorkflowOptions`.
 
 ```cpp
 struct RetryPolicy {
@@ -101,6 +108,9 @@ struct RetryPolicy {
   int maximum_attempts{0};                           // 0 => unlimited
   std::vector<std::string> non_retryable_error_types;
 };
+
+// On ActivityOptions:
+std::optional<RetryPolicy> retry_policy;  // unset => server default retry behavior
 ```
 
 ### Typical patterns
@@ -111,18 +121,20 @@ struct RetryPolicy {
 temporal::ActivityOptions opts;
 opts.start_to_close_timeout = std::chrono::seconds(30);
 
-opts.retry_policy.maximum_attempts      = 5;
-opts.retry_policy.initial_interval      = std::chrono::milliseconds(500);
-opts.retry_policy.backoff_coefficient   = 1.5;
-opts.retry_policy.maximum_interval      = std::chrono::seconds(30);
-opts.retry_policy_set = true;  // required — applies the policy above
+opts.retry_policy = temporal::RetryPolicy{
+    .initial_interval    = std::chrono::milliseconds(500),
+    .backoff_coefficient = 1.5,
+    .maximum_interval    = std::chrono::seconds(30),
+    .maximum_attempts    = 5,
+};
 ```
 
 **Mark specific error types as non-retryable by name:**
 
 ```cpp
-opts.retry_policy.non_retryable_error_types = {"CardDeclined", "InvalidInput"};
-opts.retry_policy_set = true;
+opts.retry_policy = temporal::RetryPolicy{
+    .non_retryable_error_types = {"CardDeclined", "InvalidInput"},
+};
 ```
 
 If the activity throws `ApplicationError("...", "CardDeclined")`, the server
@@ -134,15 +146,13 @@ and the `non_retryable` constructor flag is `false`.
 This is the pattern used in the integration tests for the `FailWorkflow` case:
 
 ```cpp
-opts.retry_policy.maximum_attempts = 1;
-opts.retry_policy_set = true;
+opts.retry_policy = temporal::RetryPolicy{.maximum_attempts = 1};
 ```
 
-:::warning
-Forgetting `retry_policy_set = true` is a common mistake. Until you set it, all
-`RetryPolicy` fields are ignored and the server falls back to its own defaults
-(unlimited retries with exponential backoff). Always set the flag together with
-the policy fields.
+:::note
+Leaving `retry_policy` unset is not the same as a one-attempt policy: an unset
+optional means *server defaults* (unlimited retries with exponential backoff). To
+cap or disable retries you must assign a `RetryPolicy` with the fields you want.
 :::
 
 ## Activity timeouts
@@ -180,9 +190,13 @@ the activity as timed out and schedules a retry:
 ```cpp
 opts.start_to_close_timeout  = std::chrono::minutes(10);
 opts.heartbeat_timeout        = std::chrono::seconds(15);  // must heartbeat every 15 s
-opts.retry_policy.maximum_attempts = 3;
-opts.retry_policy_set = true;
+opts.retry_policy = temporal::RetryPolicy{.maximum_attempts = 3};
 ```
+
+`RecordHeartbeat` throttles the actual server round-trips automatically (to
+roughly 80% of `heartbeat_timeout`), so a tight loop can call it freely — only
+the periodic reports hit the wire, and the cached cancel state is refreshed on
+each real report.
 
 Inside the activity, heartbeat regularly and check `IsCancelled()` so the
 activity can stop cooperatively when the server requests it:
@@ -225,18 +239,25 @@ try {
 A workflow function that **throws an unhandled exception** (anything other than
 the SDK's internal control-flow signals for `ContinueAsNew`, timers, etc.) fails
 the workflow execution. The Temporal server marks the execution `FAILED` and
-`WorkflowFailedError` is thrown on the client side when `WorkflowHandle::Get()`
+`WorkflowFailedError` is thrown on the client side when `WorkflowHandle::Result<R>()`
 is called.
 
 On the **client**, catching workflow failure looks like:
 
 ```cpp
 try {
-  std::string result = handle.Get<std::string>();
+  std::string result = handle.Result<std::string>();
 } catch (const temporal::WorkflowFailedError& e) {
   std::cerr << "Workflow failed: " << e.what() << '\n';
+  if (e.type() == "CardDeclined") { /* application-failure type, decoded client-side */ }
 }
 ```
+
+`WorkflowFailedError::type()` echoes the failure *type* of the application error
+the workflow threw, decoded on the client side from the close event — so you can
+discriminate failure kinds without parsing the message. It is empty for
+non-application closes (timeout, terminated, canceled). The same error is raised
+when a workflow times out, is terminated, or is canceled.
 
 :::note
 If you deliberately want to fail a workflow from within its code, throw
@@ -271,20 +292,43 @@ for the full treatment, including `GetVersion` for safe code evolution and the
 [Replay testing](/advanced#replay-testing) pattern to catch violations in CI
 before they reach production.
 
-## What is not implemented
+## Related failure-handling capabilities
 
-The following capabilities appear in the official Temporal SDKs but are **not
-yet available** in this SDK (see the [parity matrix](/parity)):
+A few capabilities that touch error handling live elsewhere in the docs:
 
-- **Custom failure converters** — you cannot plug in a custom encoder/decoder
-  for failure payloads. The SDK uses its built-in failure representation.
-- **Proto / ProtoJSON converters** — only the JSON converter stack is available,
-  so error details carried as Protobuf messages are not supported.
-- **Async (manual) completion** — an activity cannot complete via a token from
-  outside its goroutine/thread.
-- **Activity-side cancellation** (`RequestCancelActivityTask` without a
-  `Future::Cancel()` from the workflow) — cancellation is observable only through
-  the heartbeat path when the workflow explicitly calls `act.Cancel()`.
+- **Custom failure converters** — plug in a `FailureConverter` to control how
+  errors encode/decode on the wire; see [Data conversion](/data-conversion).
+- **Async (manual) completion** — an activity can defer with
+  `ctx.defer_completion()` and be finished out-of-band via
+  `Client::CompleteActivity` / `Client::FailActivity`; see [Activities](#async-manual-activity-completion)
+  below.
+- **Activity-side cancellation** — a workflow's `Future::Cancel()` on an activity
+  future requests cancellation; the activity observes it through
+  `Context::IsCancelled()` on its next heartbeat.
 
-If you need one of these, check the [parity matrix](/parity) for current status
-before building on top of it.
+See the [parity matrix](/parity) for the full feature status.
+
+## Async (manual) activity completion
+
+An activity does not have to return its result inline. Calling
+`ctx.defer_completion()` tells the worker **not** to report a result when the
+function returns, and hands back the task token to finish the activity later:
+
+```cpp
+std::string ChargeCard(temporal::activity::Context& ctx, std::string order_id) {
+  const std::string token = ctx.defer_completion();  // sets async; returns the task token
+  EnqueueExternalWork(order_id, token);              // some other system finishes it later
+  return {};                                         // return value ignored once deferred
+}
+```
+
+From anywhere holding a `Client`, complete or fail it by token:
+
+```cpp
+client.CompleteActivity(token, std::string("receipt-123"));      // workflow receives this result
+client.FailActivity(token, "card declined", "CardDeclined");     // workflow sees an ActivityError
+```
+
+`FailActivity`'s third argument is the failure type (default `"ApplicationError"`),
+which surfaces to the workflow as `ActivityError::type()` exactly like a thrown
+`ApplicationError`.

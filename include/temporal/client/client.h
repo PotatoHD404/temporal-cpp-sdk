@@ -167,9 +167,10 @@ struct ClusterDescription {
   std::string visibility_store;    // e.g. "elasticsearch", "postgres"
 };
 
-// A registered Nexus endpoint, returned by Client::GetNexusEndpoint. (This SDK
-// exposes endpoint *management* only — creating/listing/describing endpoints —
-// not Nexus operation calls or a worker-side Nexus handler.)
+// A registered Nexus endpoint, returned by Client::GetNexusEndpoint. Endpoints
+// are created/listed/described here; workflows call operations on them via
+// workflow::Context::ExecuteNexusOperation and a worker serves them via
+// Worker::RegisterNexusOperation.
 struct NexusEndpointDescription {
   std::string id;                 // server-assigned endpoint id (opaque)
   std::string name;               // unique endpoint name
@@ -294,9 +295,10 @@ class Client {
   // reports just the active cluster.
   std::vector<std::string> ListClusters();
 
-  // Nexus endpoint management (OperatorService). This is a slice of Nexus:
-  // endpoint registration/listing/describe only — NOT Nexus operation calls or
-  // a worker Nexus handler. The dev server may reject these RPCs unless Nexus is
+  // Nexus endpoint management (OperatorService). Operation calls + the worker
+  // handler live on workflow::Context::ExecuteNexusOperation and
+  // Worker::RegisterNexusOperation; these RPCs just register/list/describe the
+  // endpoints they target. The dev server may reject these RPCs unless Nexus is
   // enabled (start-dev --dynamic-config-value system.enableNexus=true), in which
   // case the call throws RpcError.
   //
@@ -342,7 +344,7 @@ class Client {
   std::string DeleteNamespace(const std::string& namespace_name);
 
   // Complete or fail an activity that deferred completion via
-  // activity::Context::SetWillCompleteAsync(), identified by its task token
+  // activity::Context::defer_completion(), identified by its task token
   // (activity::Context::GetInfo().task_token).
   template <class... Args>
   void CompleteActivity(const std::string& task_token, const Args&... result) {

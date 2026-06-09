@@ -42,24 +42,35 @@ over its own engine (a stackful-coroutine dispatcher with a sticky in-memory cac
 ## What works today
 
 - **Client** — connect, start workflows, await results (following continue-as-new), signal, query,
-  update, cancel, terminate.
-- **Worker** — register plain `R(Context&, Args...)` functions, poller threads, a sticky cache.
-- **Activities** — typed execution, server-driven retries with custom `RetryPolicy`, heartbeating.
-- **Timers** — `NewTimer` / `Sleep`.
-- **Workflow messaging** — signals, queries, updates.
-- **Composition** — selectors ("activity OR timeout"), child workflows, continue-as-new,
-  observe-only cancellation.
+  update, cancel, terminate; schedules (interval + cron), batch operations, visibility queries,
+  search-attribute management, and async activity completion (`CompleteActivity`/`FailActivity`).
+- **Worker** — register plain `R(Context&, Args...)` functions (or typed handles via
+  `TEMPORAL_ACTIVITY`), poller threads, a sticky cache, and history replay
+  (`ReplayWorkflowHistory`).
+- **Activities** — typed execution, server-driven retries with custom `RetryPolicy`, throttled
+  heartbeating, local activities, and async completion.
+- **Timers** — `NewTimer` / `Sleep` (and `chrono` literals like `10s` / `24h`).
+- **Workflow messaging** — signals, queries, updates (with validators), all also addressable through
+  typed `SignalRef`/`QueryRef`/`UpdateRef` handles.
+- **Determinism helpers** — `SideEffect` / `MutableSideEffect`, `GetVersion` (patching),
+  `UpsertSearchAttributes`.
+- **Composition** — selectors ("activity OR timeout"), child workflows (with
+  `ParentClosePolicy` + signal-to-child), continue-as-new, observe-only cancellation, and Nexus
+  operations.
 - **Engine** — coroutine dispatcher keeping live workflow state across suspensions; sticky cache so
   continuation tasks apply only incremental history (no full re-replay).
-- **Tested** — 18 unit tests + 17 end-to-end integration tests against a real Temporal dev server,
+- **Testing** — a time-skipping `TestWorkflowEnvironment` and `Worker::ReplayWorkflowHistory` for
+  unit-testing workflows against recorded history.
+- **Tested** — 86 unit tests + an end-to-end integration suite against a real Temporal dev server,
   plus CI.
 
 ## What's missing
 
-A lot — full parity is a multi-year effort. Notably absent: workflow versioning/patching, side
-effects, the test/replay framework, schedules, Nexus, worker versioning, interceptors, TLS/mTLS &
-API-key auth, metrics/tracing, search attributes & memo, local activities, payload codecs, and much
-of the operator/cloud client surface. The [parity matrix](/parity) lists it all.
+Full parity is still a multi-year effort. Remaining gaps are mostly at the edges: bundled
+metrics/tracing exporters (the `MetricsHandler` sink and tracing hooks are there, but no OTel
+exporter ships), payload-codec breadth beyond the bundled base64/gzip, worker-side version pinning,
+and parts of the operator/cloud client surface that need infra a single dev server can't provide.
+The [parity matrix](/parity) lists it all, with caveats.
 
 ## Next steps
 

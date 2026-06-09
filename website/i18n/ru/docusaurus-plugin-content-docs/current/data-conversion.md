@@ -63,6 +63,60 @@ class PayloadConverter {
 };
 ```
 
-:::note
-Конвертеры payload-ов **Protobuf / ProtoJSON** и **кодеки payload-ов** (для сквозного шифрования или сжатия) пока не реализованы. См. [матрицу паритета](/parity).
-:::
+## Protobuf-сообщения
+
+Сообщения, сгенерированные Protobuf, определяются автоматически и кодируются как двоичный
+protobuf (`binary/protobuf`) вместо прохождения через JSON-стек — без дополнительной
+обвязки. Чтобы вместо этого использовать proto-JSON-отображение (`json/protobuf`), применяйте конвертер,
+построенный с помощью `DataConverter::WithProtoJson()` (или вызовите `SetProtoJson(true)`).
+Декодирование всегда принимает **обе** кодировки независимо от переключателя, так что пир
+может прочитать любую из форм.
+
+## Кодеки payload-ов
+
+`PayloadCodec` преобразует уже сконвертированный payload на пути к серверу и обратно —
+сжатие или шифрование «при хранении» — применяясь после конвертера при кодировании и перед
+ним при декодировании. Оба пира должны использовать одну и ту же цепочку кодеков. Оберните
+стек по умолчанию в цепочку с помощью `DataConverter::WithCodecs`:
+
+```cpp
+auto dc = temporal::DataConverter::WithCodecs(
+    {std::make_shared<temporal::GzipPayloadCodec>()});  // например, gzip-сжатие каждого payload-а
+opts.data_converter = dc;
+```
+
+SDK поставляется с `GzipPayloadCodec` (zlib), `Base64PayloadCodec` (эталонная
+заглушка) и реализациями `PayloadStorage` (`InMemoryPayloadStorage`,
+`FilePayloadStorage`) для выгрузки слишком больших тел во внешнее хранилище.
+
+## Конвертеры ошибок
+
+`FailureConverter` транслирует C++-типы ошибок в проводной failure-proto Temporal
+(`temporal.api.failure.v1.Failure`) и обратно, так что вы можете управлять тем, как кодируются
+ошибки приложения (нести дополнительные данные, редактировать и т.д.). Установите его на
+`DataConverter`:
+
+```cpp
+auto dc = temporal::DataConverter::Default();
+dc->WithFailureConverter(std::make_shared<MyFailureConverter>());
+opts.data_converter = dc;
+```
+
+`FailureConverter` реализует два метода:
+
+```cpp
+class FailureConverter {
+ public:
+  virtual void ErrorToFailure(const std::exception& error,
+                              temporal::api::failure::v1::Failure& out) const = 0;
+  virtual std::exception_ptr FailureToError(
+      const temporal::api::failure::v1::Failure& failure) const = 0;
+};
+```
+
+Конвертер по умолчанию (`DefaultFailureConverter`) выполняет round-trip `ApplicationError`
+без потерь (тип, флаг non-retryable, сообщение, трассировка стека). Сконфигурированный
+конвертер используется для кодирования **как** ошибок активностей, **так и** собственной ошибки
+воркфлоу. На стороне клиента упавший воркфлоу проявляется как `WorkflowFailedError`,
+чей `type()` несёт декодированный тип ошибки приложения — см.
+[Ошибки, повторы и таймауты](/error-handling#workflow-failure).

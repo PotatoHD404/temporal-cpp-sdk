@@ -39,6 +39,27 @@ std::string receipt = fut.Get();   // blocks (parks) until the activity complete
 - If the activity fails (and is non-retryable, or exhausts retries), `Future::Get()` throws
   `temporal::ActivityError`.
 
+### Typed activity handles
+
+Instead of a string name plus an explicit `<R>`, you can declare a typed handle with
+`TEMPORAL_ACTIVITY` and let the type name *and* the result type come from the C++ function — a
+misspelled name or a wrong argument type becomes a compile error:
+
+```cpp
+int Increment(temporal::activity::Context& ctx, int n) { return n + 1; }
+TEMPORAL_ACTIVITY(Increment);   // declares Increment_activity, type name "Increment"
+
+int Add2(temporal::workflow::Context& ctx, int base) {
+  temporal::ActivityOptions o;
+  o.start_to_close_timeout = std::chrono::seconds(30);
+  int a = ctx.ExecuteActivity(o, Increment_activity, base).Get();   // R deduced, no <int>
+  return ctx.ExecuteActivity(o, Increment_activity, a).Get();
+}
+```
+
+Register the same handle on the worker with `worker.Register(Increment_activity)`. Typed handles
+lower to the identical string name, so they interoperate freely with the string-based API.
+
 ### Running activities in parallel
 
 Schedule several activities *before* awaiting any of them — they run concurrently:
@@ -59,16 +80,15 @@ struct ActivityOptions {
   std::chrono::milliseconds schedule_to_start_timeout{0};
   std::chrono::milliseconds start_to_close_timeout{0};     // effectively required
   std::chrono::milliseconds heartbeat_timeout{0};
-  RetryPolicy retry_policy;
-  bool retry_policy_set = false;                           // set true to apply retry_policy
+  std::optional<RetryPolicy> retry_policy;                 // unset => server default retry behavior
 };
 ```
 
-To control retries, set `retry_policy` and `retry_policy_set = true`:
+To control retries, set the whole `retry_policy` optional — an unset optional means the server's
+default retry behavior:
 
 ```cpp
-opts.retry_policy.maximum_attempts = 3;
-opts.retry_policy_set = true;
+opts.retry_policy = temporal::RetryPolicy{.maximum_attempts = 3};
 ```
 
 ```cpp
@@ -115,17 +135,75 @@ std::string ProcessBatch(temporal::activity::Context& ctx, int n) {
 
 If the activity doesn't heartbeat within `heartbeat_timeout`, the server times it out and retries.
 
+## Local activities
+
+A **local activity** runs inline in the workflow worker — no activity-task round-trip — and records
+its result as a marker; retries happen inline within the workflow task. Best for short, idempotent
+steps where the scheduling overhead would dominate. Unlike `ExecuteActivity`, it resolves within the
+call and returns the value directly (no `Future`):
+
+```cpp
+temporal::LocalActivityOptions o;
+o.start_to_close_timeout = std::chrono::seconds(5);
+o.retry_policy = temporal::RetryPolicy{.maximum_attempts = 3};
+
+int total = ctx.ExecuteLocalActivity<int>(o, "LocalAdd", base, 5);
+```
+
 ## Timers
 
 ```cpp
-ctx.Sleep(std::chrono::seconds(5));            // block for 5s
+using namespace temporal::literals;            // brings in the chrono duration literals
 
-auto timer = ctx.NewTimer(std::chrono::seconds(30));
+ctx.Sleep(5s);                                  // block for 5s
+
+auto timer = ctx.NewTimer(30s);
 // ... do other things ...
 timer.Get();                                    // block until it fires
 ```
 
-Timers are durable: a workflow sleeping for 30 days survives worker restarts.
+`Sleep`/`NewTimer` take any `std::chrono` duration; `temporal::literals` re-exports the standard
+duration literals (`5s`, `30s`, `24h`, …) so options and timers read naturally. Timers are durable:
+a workflow sleeping for 30 days survives worker restarts.
+
+## Escaping determinism: side effects & versioning
+
+Workflow code is replayed, so it can't directly call `rand()`, read a clock, or generate a UUID. The
+context provides recorded escape hatches for exactly these cases:
+
+```cpp
+// Runs fn once, records the result to history; on replay the recorded value is returned.
+std::string id = ctx.SideEffect<std::string>([] { return new_uuid(); });
+
+// Like SideEffect, but keyed and only writes a new marker when the value changes.
+// R is deduced from the callable — no explicit template argument.
+int cfg = ctx.MutableSideEffect("config", [&] { return load_config_version(); });
+```
+
+When you change a deployed workflow's logic, `GetVersion` lets old and new histories coexist on
+replay. It records a version marker the first time it runs and returns `kDefaultVersion` (`-1`) when
+replaying history recorded before the call existed:
+
+```cpp
+int v = ctx.GetVersion("greeting-change", temporal::workflow::kDefaultVersion, 1);
+if (v == temporal::workflow::kDefaultVersion) {
+  // original behavior
+} else {
+  // new behavior (v == 1)
+}
+```
+
+## Search attributes
+
+Make a running workflow discoverable in visibility queries by upserting indexed search attributes.
+Build typed values with the `temporal::sa::` helpers (the attribute must already be registered on the
+namespace):
+
+```cpp
+#include <temporal/common/search_attribute.h>
+
+ctx.UpsertSearchAttributes({{"Tier", temporal::sa::Keyword("gold")}});
+```
 
 ## Determinism rules
 
@@ -133,14 +211,16 @@ Workflow code is replayed, so it must be deterministic. Inside a workflow:
 
 - ✅ Use `ctx.ExecuteActivity`, `ctx.Sleep`/`NewTimer`, signals, queries, selectors, child workflows.
 - ✅ Use `ctx.GetLogger()` for logging and `ctx.GetInfo()` for metadata.
+- ✅ Reach for `ctx.SideEffect` / `ctx.MutableSideEffect` when you need a one-time recorded value
+  (id, randomness, a clock read), and `ctx.GetVersion` to evolve deployed workflow logic safely.
 - ❌ Don't call `rand()`, read the wall clock, sleep with `std::this_thread::sleep_for`, do network
   or disk I/O, or spawn threads. Put all of that in **activities**.
 - ❌ Don't `catch (...)` around an awaiting call in a way that could swallow the engine's internal
   control-flow exceptions.
 
 :::note
-This SDK does not yet implement automatic non-determinism *detection* or workflow *versioning*
-(`GetVersion`/patching). Until it does, changing a deployed workflow's logic can break in-flight
-executions on replay — the same hazard every Temporal SDK has, but without the guard rails. See the
-[parity matrix](/parity).
+The worker detects non-determinism on replay: if a workflow's replayed commands diverge from
+recorded history, it applies the `WorkflowPanicPolicy` (default `BlockWorkflow` — fail the task so a
+corrected build can recover). Use `ctx.GetVersion` to change deployed workflow logic without breaking
+in-flight executions. See the [parity matrix](/parity).
 :::

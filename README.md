@@ -5,11 +5,13 @@ port modeled on the official [Go SDK](https://github.com/temporalio/sdk-go), tal
 to the Temporal frontend over gRPC with its own workflow replay engine. No Rust `sdk-core`
 dependency.
 
-> ⚠️ **Status: experimental / proof-of-concept.** This is not an official Temporal SDK and is
-> not affiliated with Temporal Technologies. It currently implements a working *vertical slice*
-> — enough to run real workflows that orchestrate activities and timers end-to-end — plus the
-> full project scaffolding for growing toward Go-SDK parity. See [docs/ROADMAP.md](docs/ROADMAP.md)
-> for what is and isn't supported yet.
+> ⚠️ **Status: experimental.** This is not an official Temporal SDK and is not affiliated with
+> Temporal Technologies. It implements a substantial, fully-tested **core** of the Temporal
+> programming model — workflows, activities (incl. local + async completion), timers, signals /
+> queries / updates, child workflows, selectors, continue-as-new, `SideEffect` / `GetVersion`,
+> Nexus operations, schedules, and a time-skipping test environment — but it is **not at parity**
+> with the official SDKs. See [docs/ROADMAP.md](docs/ROADMAP.md) for what is and isn't supported
+> yet.
 
 ## Why native (and how it relates to the other SDKs)
 
@@ -117,7 +119,7 @@ You can inspect the run with `temporal workflow list` or the Web UI at http://lo
 ## Project layout
 
 ```
-include/temporal/   Public headers (client/ worker/ workflow/ activity/ converter/ common/ log/)
+include/temporal/   Public headers (client/ worker/ workflow/ activity/ converter/ common/ log/ testing/)
 src/                Implementation; src/internal/ is the native engine (not installed)
 cmake/              Protobuf/gRPC code generation
 examples/           Runnable examples
