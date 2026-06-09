@@ -41,10 +41,23 @@ class ActivityError : public TemporalError {
 };
 
 // Raised on the client side when a workflow ends non-successfully
-// (failed, timed out, terminated, or canceled).
+// (failed, timed out, terminated, or canceled). When the close event carried an
+// application failure, `type()` echoes its failure type so callers can
+// discriminate (e.g. `catch (WorkflowFailedError& e) { if (e.type() == "...") }`)
+// without parsing the message; it is empty for non-application closes.
 class WorkflowFailedError : public TemporalError {
  public:
+  // Message-only (type unknown / non-application close).
   using TemporalError::TemporalError;
+
+  // Carries the decoded application-failure `type` alongside the message.
+  WorkflowFailedError(const std::string& message, std::string type)
+      : TemporalError(message), type_(std::move(type)) {}
+
+  const std::string& type() const noexcept { return type_; }
+
+ private:
+  std::string type_;
 };
 
 // Raised when the data converter cannot encode/decode a value or payload.

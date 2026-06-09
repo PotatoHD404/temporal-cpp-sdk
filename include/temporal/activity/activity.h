@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <functional>
 #include <map>
 #include <string>
@@ -30,10 +31,17 @@ struct ActivityInfo {
 class Context {
  public:
   // `heartbeat` reports to the server and returns whether the server has asked
-  // this activity to cancel.
+  // this activity to cancel. `throttle_interval` rate-limits the ACTUAL server
+  // reports (see RecordHeartbeat); 0 (the default) disables throttling so direct
+  // constructions report on every call. The worker derives it from the activity's
+  // heartbeat timeout.
   Context(ActivityInfo info, const DataConverter* converter,
-          std::function<bool(const Payloads&)> heartbeat = {})
-      : info_(std::move(info)), converter_(converter), heartbeat_(std::move(heartbeat)) {}
+          std::function<bool(const Payloads&)> heartbeat = {},
+          std::chrono::steady_clock::duration throttle_interval = {})
+      : info_(std::move(info)),
+        converter_(converter),
+        heartbeat_(std::move(heartbeat)),
+        throttle_interval_(throttle_interval) {}
 
   const ActivityInfo& GetInfo() const { return info_; }
 
@@ -41,18 +49,32 @@ class Context {
   const DataConverter& data_converter() const { return *converter_; }
 
   // Report liveness (and optional progress details) to the server, resetting the
-  // heartbeat timeout. Long-running activities should call this periodically.
+  // heartbeat timeout. Long-running activities should call this periodically; a
+  // tight loop is fine because reports are throttled. We invoke the underlying
+  // server call only when at least `throttle_interval_` has elapsed since the last
+  // ACTUAL report (the first call always reports); otherwise we skip the round-trip
+  // and keep the cached cancel state. The cached state is refreshed only on an
+  // actual report. Mirrors the Go SDK's heartbeat throttling.
   template <class... Args>
   void RecordHeartbeat(const Args&... details) {
-    if (heartbeat_) {
-      cancel_requested_ = heartbeat_(converter_->ToPayloads(details...));
+    if (!heartbeat_) {
+      return;
     }
+    const auto now = std::chrono::steady_clock::now();
+    if (reported_ && now - last_report_ < throttle_interval_) {
+      return;  // too soon; keep the cached cancel state
+    }
+    last_report_ = now;
+    reported_ = true;
+    cancel_requested_ = heartbeat_(converter_->ToPayloads(details...));
   }
 
   // True once the server has requested this activity cancel, as observed by the
-  // most recent RecordHeartbeat (cancellation is delivered through heartbeats, so
-  // only a heartbeating activity can see it). A long-running activity should poll
-  // this and return promptly when it becomes true.
+  // most recent ACTUAL heartbeat report (cancellation is delivered through
+  // heartbeats, so only a heartbeating activity can see it). Throttled calls do
+  // not refresh this, so it may lag the server by up to one throttle interval —
+  // acceptable, since the next un-throttled heartbeat will surface it. A
+  // long-running activity should poll this and return promptly when it becomes true.
   bool IsCancelled() const { return cancel_requested_; }
 
   // Defer completion: the worker will NOT report a result when the function
@@ -75,6 +97,9 @@ class Context {
   ActivityInfo info_;
   const DataConverter* converter_;
   std::function<bool(const Payloads&)> heartbeat_;
+  std::chrono::steady_clock::duration throttle_interval_{};  // 0 => report every call
+  std::chrono::steady_clock::time_point last_report_{};      // valid only once reported_
+  bool reported_ = false;  // whether any actual report has happened (first call always reports)
   bool cancel_requested_ = false;
   bool will_complete_async_ = false;
 };

@@ -354,10 +354,12 @@ std::string SignalSelectorWorkflow(temporal::workflow::Context& ctx) {
   return out;
 }
 
-// Runs longer than its heartbeat timeout but heartbeats to stay alive.
+// Runs longer than its heartbeat timeout but heartbeats to stay alive. Heartbeats
+// finely (every 100ms) so that even with server-report throttling (~80% of the
+// heartbeat timeout) the gap between actual reports stays safely under the timeout.
 std::string HeartbeatActivity(temporal::activity::Context& ctx, int) {
-  for (int i = 0; i < 5; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  for (int i = 0; i < 25; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     ctx.RecordHeartbeat(i);
   }
   return "alive";

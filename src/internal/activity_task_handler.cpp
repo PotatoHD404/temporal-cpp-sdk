@@ -1,5 +1,6 @@
 #include "internal/activity_task_handler.h"
 
+#include <chrono>
 #include <exception>
 #include <string>
 #include <utility>
@@ -29,6 +30,25 @@ class RootActivityInbound : public interceptor::ActivityInboundInterceptor {
  private:
   const worker::ActivityFn& fn_;
 };
+
+// How often the activity may actually report a heartbeat to the server. We
+// throttle to a fraction of the heartbeat timeout (matching the Go SDK's ~80%),
+// leaving headroom so a report still lands before the timeout expires. When the
+// task carries no heartbeat timeout, fall back to a sane fixed interval.
+std::chrono::steady_clock::duration HeartbeatThrottleInterval(
+    const wsv::PollActivityTaskQueueResponse& task) {
+  constexpr auto kDefaultInterval = std::chrono::seconds(30);
+  if (!task.has_heartbeat_timeout()) {
+    return kDefaultInterval;
+  }
+  const auto& d = task.heartbeat_timeout();
+  const auto timeout =
+      std::chrono::seconds(d.seconds()) + std::chrono::nanoseconds(d.nanos());
+  if (timeout <= std::chrono::nanoseconds::zero()) {
+    return kDefaultInterval;
+  }
+  return std::chrono::duration_cast<std::chrono::steady_clock::duration>(timeout * 8 / 10);
+}
 
 }  // namespace
 
@@ -66,7 +86,7 @@ void ActivityTaskHandler::Handle(const wsv::PollActivityTaskQueueResponse& task)
     }
     return grpc_->RecordActivityTaskHeartbeat(req).cancel_requested();
   };
-  activity::Context ctx(info, converter_.get(), heartbeat);
+  activity::Context ctx(info, converter_.get(), heartbeat, HeartbeatThrottleInterval(task));
 
   const auto it = activities_.find(info.activity_type);
   if (it == activities_.end()) {

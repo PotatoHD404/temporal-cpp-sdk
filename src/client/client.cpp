@@ -1,6 +1,7 @@
 #include <temporal/client/client.h>
 
 #include <cctype>
+#include <exception>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -14,6 +15,7 @@
 #include "temporal/api/enums/v1/event_type.pb.h"
 #include "temporal/api/enums/v1/update.pb.h"
 #include "temporal/api/enums/v1/workflow.pb.h"
+#include "temporal/api/failure/v1/message.pb.h"
 #include "temporal/api/history/v1/message.pb.h"
 #include "temporal/api/query/v1/message.pb.h"
 #include "temporal/api/schedule/v1/message.pb.h"
@@ -23,6 +25,7 @@
 #include "internal/proto_util.h"
 
 #include <temporal/common/errors.h>
+#include <temporal/converter/failure_converter.h>
 #include <temporal/interceptor/interceptor.h>
 #include <temporal/log/logger.h>
 
@@ -194,9 +197,26 @@ Payloads WorkflowHandle::ResultPayloads() {
             ev.workflow_execution_completed_event_attributes().result());
       }
       if (ev.event_type() == enums::EVENT_TYPE_WORKFLOW_EXECUTION_FAILED) {
-        throw WorkflowFailedError(
-            "workflow failed: " +
-            ev.workflow_execution_failed_event_attributes().failure().message());
+        const auto& failure = ev.workflow_execution_failed_event_attributes().failure();
+        // Decode the close failure into a typed exception. A configured failure
+        // converter owns the message shape (its decoded error's what()); the
+        // application-failure type is preserved on WorkflowFailedError::type() so
+        // callers can discriminate without parsing the message. Falls back to the
+        // raw proto fields when no custom converter is installed.
+        std::string message = failure.message();
+        std::string type =
+            failure.has_application_failure_info() ? failure.application_failure_info().type() : "";
+        if (const auto& fc = converter_->failure_converter()) {
+          try {
+            std::rethrow_exception(fc->FailureToError(failure));
+          } catch (const ApplicationError& decoded) {
+            message = decoded.what();
+            type = decoded.type();
+          } catch (const std::exception& decoded) {
+            message = decoded.what();
+          }
+        }
+        throw WorkflowFailedError("workflow failed: " + message, std::move(type));
       }
       if (ev.event_type() == enums::EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW) {
         // Follow the continue-as-new chain to the next run.
