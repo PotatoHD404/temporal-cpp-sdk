@@ -125,6 +125,17 @@ struct BatchOperationDescription {
   std::int64_t failed_operations = 0;
 };
 
+// Identifying information about the Temporal cluster the client is connected to,
+// returned by Client::DescribeCluster.
+struct ClusterDescription {
+  std::string cluster_name;
+  std::string cluster_id;
+  std::string server_version;
+  std::int64_t history_shard_count = 0;
+  std::string persistence_store;   // e.g. "postgres", "cassandra", "sqlite"
+  std::string visibility_store;    // e.g. "elasticsearch", "postgres"
+};
+
 // A client connection to the Temporal frontend service. Cheap to copy (shared
 // gRPC channel). Mirrors the Go SDK's `client.Client`.
 class Client {
@@ -218,6 +229,14 @@ class Client {
   SearchAttributes ListSearchAttributes();
   // Remove custom search attributes by name (system attributes can't be removed).
   void RemoveSearchAttributes(const std::vector<std::string>& names);
+
+  // Identifying information about the cluster this client is connected to
+  // (server version, persistence/visibility stores, history shard count).
+  ClusterDescription DescribeCluster();
+  // The names of every cluster registered with this Temporal deployment
+  // (OperatorService; pages through results). A single-cluster dev server
+  // reports just the active cluster.
+  std::vector<std::string> ListClusters();
 
   // Complete or fail an activity that deferred completion via
   // activity::Context::SetWillCompleteAsync(), identified by its task token

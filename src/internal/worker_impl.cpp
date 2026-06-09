@@ -71,7 +71,8 @@ WorkerImpl::WorkerImpl(std::shared_ptr<GrpcClient> grpc, std::shared_ptr<DataCon
       activity_handler_(grpc_.get(), converter_, logger_, task_queue_),
       workflow_gate_(options.max_concurrent_workflow_task_executions),
       activity_gate_(options.max_concurrent_activity_executions),
-      session_gate_(options.max_concurrent_sessions) {
+      session_gate_(options.max_concurrent_sessions),
+      activity_rate_limiter_(options.max_activities_per_second) {
   // Let workflows run registered activities inline as local activities (the
   // workflow handler resolves activity functions from the activity registry).
   workflow_handler_.SetLocalActivityResolver(
@@ -271,6 +272,11 @@ void WorkerImpl::ActivityPollLoop(bool session) {
       }
       if (draining_.load()) {
         continue;
+      }
+      // Pace activity starts to the configured per-second rate (no-op if unset).
+      activity_rate_limiter_.Acquire(stop_);
+      if (stop_.load()) {
+        break;
       }
       GateGuard permit(gate, gate.Acquire());
       if (!permit.held()) {

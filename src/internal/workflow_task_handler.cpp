@@ -1268,7 +1268,31 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
   }
 
   const std::string& run_id = info.run_id;
-  const auto& events = task.history().events();
+  // History pagination: a large workflow history is delivered across pages (the
+  // poll response carries a next_page_token). Assemble the full history before
+  // replaying so prescan and determinism checks see every event.
+  hist::History paged_history;
+  const hist::History* history_ptr = &task.history();
+  if (!task.next_page_token().empty()) {
+    for (const auto& ev : task.history().events()) {
+      *paged_history.add_events() = ev;
+    }
+    std::string page_token = task.next_page_token();
+    while (!page_token.empty()) {
+      wsv::GetWorkflowExecutionHistoryRequest req;
+      req.set_namespace_(grpc_->ns());
+      req.mutable_execution()->set_workflow_id(info.workflow_id);
+      req.mutable_execution()->set_run_id(info.run_id);
+      req.set_next_page_token(page_token);
+      const auto resp = grpc_->GetWorkflowExecutionHistory(req);
+      for (const auto& ev : resp.history().events()) {
+        *paged_history.add_events() = ev;
+      }
+      page_token = resp.next_page_token();
+    }
+    history_ptr = &paged_history;
+  }
+  const auto& events = history_ptr->events();
   const std::int64_t first_event_id = events.empty() ? 0 : events.Get(0).event_id();
   // "Full history" begins at the WorkflowExecutionStarted event. Anything else
   // (empty, or starting mid-stream) is a sticky continuation or a sticky query
@@ -1301,7 +1325,7 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
     // A query observes current state without advancing the workflow; a normal
     // continuation applies its new events and resumes the parked coroutine.
     if (!is_query_task) {
-      runner->ApplyAndResume(task.history());
+      runner->ApplyAndResume(*history_ptr);
     }
   } else if (is_query_task) {
     // Query for a run we don't have cached: page in full history and rebuild
@@ -1319,7 +1343,7 @@ void WorkflowTaskHandler::Handle(const wsv::PollWorkflowTaskQueueResponse& task)
     return;
   } else {
     replays_.fetch_add(1, std::memory_order_relaxed);
-    Prescan scan = ScanHistory(task.history());
+    Prescan scan = ScanHistory(*history_ptr);
     Payloads input = scan.input;
     const bool is_replaying = task.previous_started_event_id() > 0;
     runner = std::make_shared<WorkflowRunner>(info, logger_, is_replaying, std::move(scan),

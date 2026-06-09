@@ -357,6 +357,14 @@ wsv::ListBatchOperationsResponse GrpcClient::ListBatchOperations(
       });
 }
 
+wsv::GetClusterInfoResponse GrpcClient::GetClusterInfo(const wsv::GetClusterInfoRequest& req) {
+  return UnaryCall<wsv::GetClusterInfoResponse>(
+      "GetClusterInfo", false,
+      [&](grpc::ClientContext* c, wsv::GetClusterInfoResponse* p) {
+        return stub_->GetClusterInfo(c, req, p);
+      });
+}
+
 osv::AddSearchAttributesResponse GrpcClient::AddSearchAttributes(
     const osv::AddSearchAttributesRequest& req) {
   return UnaryCall<osv::AddSearchAttributesResponse>(
@@ -381,6 +389,14 @@ osv::RemoveSearchAttributesResponse GrpcClient::RemoveSearchAttributes(
       "RemoveSearchAttributes", false,
       [&](grpc::ClientContext* c, osv::RemoveSearchAttributesResponse* p) {
         return operator_stub_->RemoveSearchAttributes(c, req, p);
+      });
+}
+
+osv::ListClustersResponse GrpcClient::ListClusters(const osv::ListClustersRequest& req) {
+  return UnaryCall<osv::ListClustersResponse>(
+      "ListClusters", false,
+      [&](grpc::ClientContext* c, osv::ListClustersResponse* p) {
+        return operator_stub_->ListClusters(c, req, p);
       });
 }
 

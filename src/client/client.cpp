@@ -659,6 +659,41 @@ void Client::RemoveSearchAttributes(const std::vector<std::string>& names) {
   grpc_->RemoveSearchAttributes(req);
 }
 
+ClusterDescription Client::DescribeCluster() {
+  // Cluster-scoped: GetClusterInfo carries no namespace and takes an empty request.
+  internal::wsv::GetClusterInfoRequest req;
+  const auto resp = grpc_->GetClusterInfo(req);
+  ClusterDescription out;
+  out.cluster_name = resp.cluster_name();
+  out.cluster_id = resp.cluster_id();
+  out.server_version = resp.server_version();
+  out.history_shard_count = resp.history_shard_count();
+  out.persistence_store = resp.persistence_store();
+  out.visibility_store = resp.visibility_store();
+  return out;
+}
+
+std::vector<std::string> Client::ListClusters() {
+  std::vector<std::string> out;
+  std::string page_token;
+  for (;;) {
+    // Cluster-scoped: ListClusters carries no namespace.
+    internal::osv::ListClustersRequest req;
+    if (!page_token.empty()) {
+      req.set_next_page_token(page_token);
+    }
+    const auto resp = grpc_->ListClusters(req);
+    for (const auto& cluster : resp.clusters()) {
+      out.push_back(cluster.cluster_name());
+    }
+    page_token = resp.next_page_token();
+    if (page_token.empty()) {
+      break;
+    }
+  }
+  return out;
+}
+
 void Client::CompleteActivityPayloads(const std::string& task_token, const Payloads& result) {
   internal::wsv::RespondActivityTaskCompletedRequest req;
   req.set_namespace_(ns_);

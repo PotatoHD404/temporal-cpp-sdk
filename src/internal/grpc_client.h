@@ -87,6 +87,7 @@ class GrpcClient {
       const wsv::DescribeBatchOperationRequest& req);
   wsv::ListBatchOperationsResponse ListBatchOperations(
       const wsv::ListBatchOperationsRequest& req);
+  wsv::GetClusterInfoResponse GetClusterInfo(const wsv::GetClusterInfoRequest& req);
 
   // OperatorService RPCs (separate gRPC service sharing the same channel).
   osv::AddSearchAttributesResponse AddSearchAttributes(
@@ -95,6 +96,7 @@ class GrpcClient {
       const osv::ListSearchAttributesRequest& req);
   osv::RemoveSearchAttributesResponse RemoveSearchAttributes(
       const osv::RemoveSearchAttributesRequest& req);
+  osv::ListClustersResponse ListClusters(const osv::ListClustersRequest& req);
 
  private:
   // Issues one unary RPC, attaching auth metadata (Authorization + namespace) when

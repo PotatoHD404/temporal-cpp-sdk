@@ -108,6 +108,37 @@ class GateGuard {
   bool held_;
 };
 
+// Paces task starts to at most `per_second` per second (0 => unlimited). Steady
+// (no burst): Acquire() hands out evenly-spaced slots and sleeps in short slices
+// until the slot, so a Stop() (stop flag) is observed promptly.
+class RateLimiter {
+ public:
+  explicit RateLimiter(double per_second) : per_second_(per_second) {}
+
+  void Acquire(const std::atomic<bool>& stop) {
+    if (per_second_ <= 0.0) {
+      return;  // unlimited
+    }
+    const auto interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(1.0 / per_second_));
+    std::chrono::steady_clock::time_point allowed;
+    {
+      const std::lock_guard<std::mutex> lock(mu_);
+      const auto now = std::chrono::steady_clock::now();
+      allowed = next_slot_ < now ? now : next_slot_;
+      next_slot_ = allowed + interval;
+    }
+    while (!stop.load() && std::chrono::steady_clock::now() < allowed) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+
+ private:
+  std::mutex mu_;
+  double per_second_;
+  std::chrono::steady_clock::time_point next_slot_;  // epoch by default
+};
+
 // Owns the poller threads and the two task handlers. One worker serves a single
 // task queue.
 class WorkerImpl {
@@ -154,6 +185,7 @@ class WorkerImpl {
   ConcurrencyGate workflow_gate_;
   ConcurrencyGate activity_gate_;
   ConcurrencyGate session_gate_;
+  RateLimiter activity_rate_limiter_;  // paces activity starts (per second)
   std::atomic<bool> stop_{false};
   std::atomic<bool> draining_{false};  // set by Stop() before pollers are joined
   std::atomic<bool> started_{false};

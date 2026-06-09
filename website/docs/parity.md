@@ -32,7 +32,7 @@ cache. This page is the honest accounting.
 | Reset workflow | ✅ | `Client::ResetWorkflow` (ResetWorkflowExecution); e2e-verified |
 | Batch operations | ✅ | `StartBatchTerminate`/`StartBatchCancel` + `Describe`/`List`; e2e-verified |
 | Schedules client | ✅ | create / describe / delete / update / list / trigger / pause / unpause (interval spec) |
-| Operator service | 🟡 | search-attribute add/list/remove ✅ e2e; cluster/namespace admin ❌ |
+| Operator service | 🟡 | search-attribute add/list/remove + cluster info/list ✅ e2e; remote-cluster + namespace admin ❌ |
 | Cloud service | ❌ | cloud proto not vendored |
 
 ## Worker
@@ -44,7 +44,7 @@ cache. This page is the honest accounting.
 | Sticky cache (resident workflows) | ✅ | incremental-history continuations |
 | Bounded cache LRU / eviction tuning | ✅ | `max_cached_workflows` (LRU eviction) |
 | Concurrent-execution caps | ✅ | `max_concurrent_activity/workflow_task_executions` enforced by a gate; e2e-verified |
-| Rate limiting (per-second) | ❌ | task/activity-per-second throttles not yet enforced |
+| Rate limiting (per-second) | ✅ | per-worker activity-per-second throttle (`max_activities_per_second`, token bucket); e2e-verified |
 | Graceful drain | ✅ | `graceful_shutdown_timeout`; Stop() drains in-flight tasks; e2e-verified |
 | Poller autoscaling | 🟡 | conservative idle-park within the fixed poller bounds; not true elasticity |
 | Worker Build-ID compatibility (v0.1) | ✅ | `Get/Update/PromoteWorkerBuildIdCompatibility`; e2e-verified |
@@ -103,7 +103,7 @@ cache. This page is the honest accounting.
 | Sticky cache + incremental history | ✅ | |
 | Non-determinism detection | ✅ | replayed commands matched to history in order; `WorkflowPanicPolicy` (block/fail) |
 | Replay re-application of updates | ❌ | matters only after a cache eviction |
-| History pagination | ❌ | long histories not paged |
+| History pagination | ✅ | workflow-task / query / export paths assemble paged histories via `next_page_token` |
 | Deadlock detection / panic policies | ❌ | |
 
 ## Security, observability, ecosystem

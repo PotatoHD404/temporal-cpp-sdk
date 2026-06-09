@@ -1622,4 +1622,64 @@ TEST_F(IntegrationTest, OperatorAddSearchAttributeRejectsUnknownType) {
   EXPECT_THROW(client_->AddSearchAttributes({{"BogusAttr", "NotAType"}}), std::invalid_argument);
 }
 
+// ===========================================================================
+// Wave-4 parity additions: per-second activity rate limiting.
+// ===========================================================================
+
+std::string InstantActivity(temporal::activity::Context&, int) { return "ok"; }
+
+int RateFanOutWorkflow(temporal::workflow::Context& ctx, int n) {
+  temporal::ActivityOptions o;
+  o.start_to_close_timeout = 30s;
+  std::vector<temporal::workflow::Future<std::string>> fs;
+  for (int i = 0; i < n; ++i) {
+    fs.push_back(ctx.ExecuteActivity<std::string>(o, "Instant", i));
+  }
+  for (auto& f : fs) {
+    f.Get();
+  }
+  return n;
+}
+
+// POSITIVE: a 2/sec rate limit paces 6 instant activity starts to take >= ~2s
+// (without it, 6 instant activities finish in well under a second).
+TEST_F(IntegrationTest, ActivityRateLimitPacesStarts) {
+  const auto tq = UniqueTaskQueue("rate");
+  temporal::WorkerOptions wo;
+  wo.max_activities_per_second = 2.0;
+  wo.activity_task_pollers = 4;  // pollers share one limiter -> 2/sec total
+  temporal::worker::Worker worker(*client_, tq, wo);
+  worker.RegisterWorkflow("RateFanOutWorkflow", RateFanOutWorkflow);
+  worker.RegisterActivity("Instant", InstantActivity);
+  worker.Start();
+  temporal::StartWorkflowOptions o;
+  o.task_queue = tq;
+  const auto start = std::chrono::steady_clock::now();
+  auto h = client_->StartWorkflow(o, "RateFanOutWorkflow", 6);
+  EXPECT_EQ(h.Result<int>(), 6);
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  EXPECT_GE(elapsed, 2s);  // 6 starts at 2/sec are spaced ~0.5s apart
+  worker.Stop();
+}
+
+// POSITIVE: DescribeCluster (backed by GetClusterInfo) returns server info.
+TEST_F(IntegrationTest, DescribeClusterReturnsServerInfo) {
+  const auto desc = client_->DescribeCluster();
+  EXPECT_FALSE(desc.server_version.empty());
+  EXPECT_GT(desc.history_shard_count, 0);
+}
+
+// POSITIVE: ListClusters includes the dev server's "active" cluster.
+TEST_F(IntegrationTest, ListClustersIncludesActiveCluster) {
+  const auto names = client_->ListClusters();
+  ASSERT_FALSE(names.empty());
+  bool found_active = false;
+  for (const auto& n : names) {
+    if (n == "active") {
+      found_active = true;
+    }
+  }
+  EXPECT_TRUE(found_active);
+}
+
 }  // namespace

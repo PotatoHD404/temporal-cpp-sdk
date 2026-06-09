@@ -144,6 +144,11 @@ struct WorkerOptions {
   int max_concurrent_activity_executions = 0;
   int max_concurrent_workflow_task_executions = 0;
 
+  // Caps the rate at which this worker starts activity executions, in activities
+  // per second across all activity pollers (0 => unlimited). Paces starts evenly
+  // (no burst); mirrors the Go SDK's WorkerActivitiesPerSecond.
+  double max_activities_per_second = 0.0;
+
   // On Stop(), how long to wait for in-flight task executions to finish after
   // polling for new tasks ceases. 0 => don't wait (join pollers immediately,
   // which still lets any in-flight Handle() run to completion before its thread
